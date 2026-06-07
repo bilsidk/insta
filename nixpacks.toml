@@ -1,8 +1,0 @@
-[phases.setup]
-nixPkgs = ["nodejs"]
-
-[phases.install]
-cmds = ["cd backend && npm install && npm run migrate"]
-
-[phases.start]
-cmd = "cd backend && node server.js"
