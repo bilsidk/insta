@@ -15,10 +15,22 @@ async function getMe(req, res, next) {
 }
 
 async function deleteMe(req, res, next) {
+  const client = await pool.connect();
   try {
-    await pool.query('DELETE FROM users WHERE id = $1', [req.userId]);
-    res.json({ ok: true, message: 'Account deleted.' });
-  } catch (err) { next(err); }
+    const userId = req.userId;
+    await client.query('BEGIN');
+    await client.query(`DELETE FROM completions WHERE task_id IN (SELECT t.id FROM tasks t JOIN instagram_accounts ia ON ia.id = t.account_id WHERE ia.user_id = $1)`, [userId]);
+    await client.query('DELETE FROM completions WHERE user_id = $1', [userId]);
+    await client.query(`DELETE FROM tasks WHERE account_id IN (SELECT id FROM instagram_accounts WHERE user_id = $1)`, [userId]);
+    await client.query('DELETE FROM transactions WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM device_accounts WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM instagram_accounts WHERE user_id = $1', [userId]);
+    const r = await client.query('DELETE FROM users WHERE id = $1 RETURNING id', [userId]);
+    if (!r.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'User not found' }); }
+    await client.query('COMMIT');
+    res.json({ ok: true, message: 'Account permanently deleted.' });
+  } catch (err) { await client.query('ROLLBACK'); next(err); }
+  finally { client.release(); }
 }
 
 module.exports = { getMe, deleteMe };

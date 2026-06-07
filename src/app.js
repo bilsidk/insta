@@ -63,9 +63,8 @@ app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().
 app.use('/auth',         authLimiter,    authRoutes);
 app.use('/users',                        userRoutes);
 app.use('/accounts',                     accountRoutes);
-app.use('/tasks',                        taskRoutes);
 app.use('/tasks/:id/verify', verifyLimiter);
-app.use('/tasks',        campaignLimiter);
+app.use('/tasks',        campaignLimiter, taskRoutes);
 app.use('/transactions',                 transactionRoutes);
 app.use('/admin',        adminLimiter,   adminRoutes);
 

@@ -61,21 +61,19 @@ async function createTask(req, res, next) {
       return res.status(400).json({ error: 'Connect Instagram account first' });
     }
 
-    const isOwner = false;
     const slotCost = cfg.INSTA_SLOT_COSTS[task_type];
     const taskReward = cfg.INSTA_REWARDS[task_type];
     const totalCost = slots * slotCost;
 
-    const me = await client.query('SELECT role, email, coins FROM users WHERE id = $1', [req.userId]);
+    const me = await client.query('SELECT role, email FROM users WHERE id = $1', [req.userId]);
     const user = me.rows[0];
 
+    await client.query('BEGIN');
     const uRes = await client.query('SELECT coins FROM users WHERE id = $1 FOR UPDATE', [req.userId]);
     if (uRes.rows[0].coins < totalCost) {
       await client.query('ROLLBACK');
       return res.status(402).json({ error: 'Insufficient coins', required: totalCost, available: uRes.rows[0].coins });
     }
-
-    await client.query('BEGIN');
     await client.query('UPDATE users SET coins = coins - $1 WHERE id = $2', [totalCost, req.userId]);
 
     const taskRes = await client.query(
@@ -88,7 +86,7 @@ async function createTask(req, res, next) {
        task_type === 'follow' ? acc.rows[0].instagram_user_id : null,
        instagram_media_id || null, instagram_media_thumbnail || null,
        instagram_media_permalink || null, instagram_media_caption || null,
-       taskReward, slots, cfg.TIER.USER]
+       taskReward, slots, user?.role === 'owner' ? cfg.TIER.OWNER : cfg.TIER.USER]
     );
 
     const txKey = `tx:campaign_created|type:${task_type}|slots:${slots}|cost:${slotCost}`;

@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS users (
   device_id VARCHAR(255),
   reclaim_count INTEGER DEFAULT 0,
   trust_score INTEGER DEFAULT 100,
+  banned_at TIMESTAMP,
   created_at TIMESTAMP DEFAULT NOW()
 );
 
