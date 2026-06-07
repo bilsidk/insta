@@ -1,0 +1,9 @@
+[phases.install]
+nixPkgs = ["nodejs", "nodePackages.pnpm"]
+cmds = ["npm install", "npm run migrate"]
+
+[phases.setup]
+nixPkgs = ["nodejs"]
+
+[phases.start]
+cmd = "node server.js"
