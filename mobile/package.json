@@ -1,0 +1,41 @@
+{
+  "name": "InstaGrowth",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "android": "react-native run-android",
+    "ios": "react-native run-ios",
+    "start": "react-native start",
+    "test": "jest",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "react": "19.0.3",
+    "react-native": "0.85.3",
+    "@react-navigation/native": "^7.1.0",
+    "@react-navigation/native-stack": "^7.3.0",
+    "react-native-screens": "^4.10.0",
+    "react-native-safe-area-context": "^5.3.0",
+    "@react-native-async-storage/async-storage": "^2.1.2",
+    "react-native-app-auth": "^8.1.1"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.26.0",
+    "@babel/preset-env": "^7.26.0",
+    "@babel/runtime": "^7.26.0",
+    "@react-native/babel-preset": "0.85.3",
+    "@react-native/eslint-config": "0.85.3",
+    "@react-native/metro-config": "0.85.3",
+    "@react-native/typescript-config": "0.85.3",
+    "babel-jest": "^29.7.0",
+    "eslint": "^8.57.0",
+    "jest": "^29.7.0",
+    "react-test-renderer": "19.0.3"
+  },
+  "jest": {
+    "preset": "react-native"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
