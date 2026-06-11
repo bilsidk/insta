@@ -164,14 +164,17 @@ async function fetchUserPosts(instagramUserId, accessToken) {
 
 async function exchangeCodeForToken(code) {
   try {
-    const { data } = await axios.post('https://graph.facebook.com/v22.0/oauth/access_token', null, {
-      params: {
-        client_id: process.env.INSTAGRAM_APP_ID,
-        client_secret: process.env.INSTAGRAM_APP_SECRET,
-        redirect_uri: process.env.INSTAGRAM_REDIRECT_URI,
-        code,
-      },
-    });
+    const params = new URLSearchParams();
+    params.append('client_id', process.env.INSTAGRAM_APP_ID);
+    params.append('client_secret', process.env.INSTAGRAM_APP_SECRET);
+    params.append('redirect_uri', process.env.INSTAGRAM_REDIRECT_URI);
+    params.append('code', code);
+
+    const { data } = await axios.post(
+      'https://graph.facebook.com/v22.0/oauth/access_token',
+      params.toString(),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
     return { accessToken: data.access_token, expiresIn: data.expires_in };
   } catch (err) {
     logger.error('Token exchange failed', { error: err.response?.data || err.message });
