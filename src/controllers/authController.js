@@ -105,7 +105,9 @@ async function instagramCallback(req, res, next) {
       return res.redirect(`https://viralboostnow.com/auth?error=${encodeURIComponent(error || 'cancelled')}`);
     }
 
+    console.log('[Callback] exchanging code:', code?.slice(0, 20), 'at', new Date().toISOString());
     const tokenResult = await instagram.exchangeCodeForToken(code);
+    console.log('[Callback] tokenResult:', tokenResult ? 'success' : 'failed');
     if (!tokenResult) return res.redirect('https://viralboostnow.com/auth?error=token_exchange_failed');
 
     const longLived = await instagram.getLongLivedToken(tokenResult.accessToken);
