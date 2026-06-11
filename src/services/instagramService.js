@@ -194,7 +194,7 @@ async function getLongLivedToken(shortLivedToken) {
     });
     return { accessToken: data.access_token, expiresIn: data.expires_in };
   } catch (err) {
-    logger.error('Long-lived token exchange failed', { error: err.message });
+    logger.error('Long-lived token exchange failed', { error: err.response?.data || err.message });
     return null;
   }
 }
@@ -214,7 +214,7 @@ async function getInstagramUserInfo(accessToken) {
       profilePicUrl: data.profile_picture_url,
     };
   } catch (err) {
-    logger.error('Fetch user info failed', { error: err.message });
+    logger.error('Fetch user info failed', { error: err.response?.data || err.message });
     return null;
   }
 }
