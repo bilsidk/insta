@@ -98,7 +98,8 @@ async function signIn(req, res, next) {
 
 async function instagramCallback(req, res, next) {
   try {
-    const { code, error } = req.query;
+    const { code: rawCode, error } = req.query;
+    const code = rawCode?.split('#')[0]; // strip #_ fragment Instagram sometimes appends
 
     if (error || !code) {
       return res.redirect(`https://viralboostnow.com/auth?error=${encodeURIComponent(error || 'cancelled')}`);
