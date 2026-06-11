@@ -201,16 +201,16 @@ async function getLongLivedToken(shortLivedToken) {
 
 async function getInstagramUserInfo(accessToken) {
   try {
-    const { data } = await axios.get('https://graph.instagram.com/me', {
+    const { data } = await axios.get('https://graph.instagram.com/v22.0/me', {
       params: {
         access_token: accessToken,
-        fields: 'id,username',
+        fields: 'id,username,name',
       },
     });
     console.log('Instagram user info:', JSON.stringify(data));
     return {
       instagramUserId: data.id,
-      username: data.username,
+      username: data.username || data.name || `user_${data.id}`,
       accountType: 'business',
       profilePicUrl: null,
     };
