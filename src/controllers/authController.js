@@ -101,18 +101,18 @@ async function instagramCallback(req, res, next) {
     const { code, error } = req.query;
 
     if (error || !code) {
-      return res.redirect(`com.instagrowth://auth?error=${encodeURIComponent(error || 'cancelled')}`);
+      return res.redirect(`https://viralboostnow.com/auth?error=${encodeURIComponent(error || 'cancelled')}`);
     }
 
     const tokenResult = await instagram.exchangeCodeForToken(code);
-    if (!tokenResult) return res.redirect('com.instagrowth://auth?error=token_exchange_failed');
+    if (!tokenResult) return res.redirect('https://viralboostnow.com/auth?error=token_exchange_failed');
 
     const longLived = await instagram.getLongLivedToken(tokenResult.accessToken);
     const accessToken = longLived?.accessToken || tokenResult.accessToken;
     const expiresIn   = longLived?.expiresIn   || tokenResult.expiresIn;
 
     const userInfo = await instagram.getInstagramUserInfo(accessToken);
-    if (!userInfo) return res.redirect('com.instagrowth://auth?error=profile_fetch_failed');
+    if (!userInfo) return res.redirect('https://viralboostnow.com/auth?error=profile_fetch_failed');
 
     const existingAccount = await pool.query(
       'SELECT user_id FROM instagram_accounts WHERE instagram_user_id = $1',
@@ -143,7 +143,7 @@ async function instagramCallback(req, res, next) {
       }
     }
 
-    if (!user) return res.redirect('com.instagrowth://auth?error=user_creation_failed');
+    if (!user) return res.redirect('https://viralboostnow.com/auth?error=user_creation_failed');
 
     const expiry = new Date(Date.now() + (expiresIn || 5184000) * 1000);
     await pool.query(
@@ -160,7 +160,7 @@ async function instagramCallback(req, res, next) {
     );
 
     const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET, { expiresIn: '30d' });
-    res.redirect(`com.instagrowth://auth?token=${encodeURIComponent(token)}`);
+    res.redirect(`https://viralboostnow.com/auth?token=${encodeURIComponent(token)}`);
   } catch (err) { next(err); }
 }
 
