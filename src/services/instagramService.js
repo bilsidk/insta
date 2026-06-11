@@ -185,13 +185,15 @@ async function exchangeCodeForToken(code) {
 
 async function getLongLivedToken(shortLivedToken) {
   try {
-    const { data } = await axios.get('https://graph.instagram.com/access_token', {
-      params: {
-        grant_type: 'ig_exchange_token',
-        client_secret: process.env.INSTAGRAM_APP_SECRET,
-        access_token: shortLivedToken,
-      },
-    });
+    const params = new URLSearchParams();
+    params.append('grant_type', 'ig_exchange_token');
+    params.append('client_secret', process.env.INSTAGRAM_APP_SECRET);
+    params.append('access_token', shortLivedToken);
+    const { data } = await axios.post(
+      'https://graph.instagram.com/access_token',
+      params.toString(),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
     return { accessToken: data.access_token, expiresIn: data.expires_in };
   } catch (err) {
     console.error('Long-lived token exchange failed:', JSON.stringify(err.response?.data || err.message));
@@ -211,30 +213,12 @@ async function getInstagramUserInfo(accessToken) {
     return {
       instagramUserId: data.id,
       username: data.username,
-      accountType: data.account_type || 'personal',
-      profilePicUrl: data.profile_picture_url,
+      accountType: 'business',
+      profilePicUrl: null,
     };
   } catch (err) {
     console.error('Fetch user info failed:', JSON.stringify(err.response?.data || err.message));
-    // Try fallback with graph.facebook.com
-    try {
-      const { data } = await axios.get(`${API_BASE}/me`, {
-        params: {
-          access_token: accessToken,
-          fields: 'id,username,account_type,profile_picture_url',
-        },
-      });
-      console.log('Instagram user info (fallback):', JSON.stringify(data));
-      return {
-        instagramUserId: data.id,
-        username: data.username,
-        accountType: data.account_type || 'personal',
-        profilePicUrl: data.profile_picture_url,
-      };
-    } catch (err2) {
-      console.error('Fetch user info fallback failed:', JSON.stringify(err2.response?.data || err2.message));
-      return null;
-    }
+    return null;
   }
 }
 
