@@ -185,15 +185,13 @@ async function exchangeCodeForToken(code) {
 
 async function getLongLivedToken(shortLivedToken) {
   try {
-    const params = new URLSearchParams();
-    params.append('grant_type', 'ig_exchange_token');
-    params.append('client_secret', process.env.INSTAGRAM_APP_SECRET);
-    params.append('access_token', shortLivedToken);
-    const { data } = await axios.post(
-      'https://graph.instagram.com/access_token',
-      params.toString(),
-      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-    );
+    const { data } = await axios.get('https://graph.instagram.com/access_token', {
+      params: {
+        grant_type: 'ig_exchange_token',
+        client_secret: process.env.INSTAGRAM_APP_SECRET,
+        access_token: shortLivedToken,
+      },
+    });
     return { accessToken: data.access_token, expiresIn: data.expires_in };
   } catch (err) {
     console.error('Long-lived token exchange failed:', JSON.stringify(err.response?.data || err.message));
