@@ -5,9 +5,9 @@ const logger = require('../utils/logger');
 const API_BASE = 'https://graph.facebook.com/v22.0';
 
 async function refreshToken(accountId) {
-  const acc = await pool.query('SELECT refresh_token FROM instagram_accounts WHERE id = $1', [accountId]);
-  const refreshToken = acc.rows[0]?.refresh_token;
-  if (!refreshToken) return null;
+  const acc = await pool.query('SELECT refresh_token, access_token FROM instagram_accounts WHERE id = $1', [accountId]);
+  const token = acc.rows[0]?.refresh_token || acc.rows[0]?.access_token;
+  if (!token) return null;
 
   try {
     const { data } = await axios.get(`${API_BASE}/oauth/access_token`, {
@@ -15,12 +15,12 @@ async function refreshToken(accountId) {
         grant_type: 'fb_exchange_token',
         client_id: process.env.INSTAGRAM_APP_ID,
         client_secret: process.env.INSTAGRAM_APP_SECRET,
-        fb_exchange_token: refreshToken,
+        fb_exchange_token: token,
       },
     });
     const newExpiry = new Date(Date.now() + (data.expires_in || 60 * 24 * 3600) * 1000);
     await pool.query(
-      `UPDATE instagram_accounts SET access_token = $1, token_expiry = $2 WHERE id = $3`,
+      `UPDATE instagram_accounts SET access_token = $1, refresh_token = $1, token_expiry = $2 WHERE id = $3`,
       [data.access_token, newExpiry, accountId]
     );
     return data.access_token;
@@ -39,10 +39,8 @@ async function getValidToken(accountId) {
   const row = acc.rows[0];
 
   if (row.token_expiry && new Date() >= new Date(row.token_expiry)) {
-    if (row.refresh_token) {
-      const newToken = await refreshToken(accountId);
-      if (newToken) return newToken;
-    }
+    const newToken = await refreshToken(accountId);
+    if (newToken) return newToken;
     return null;
   }
   return row.access_token;
@@ -166,7 +164,7 @@ async function fetchUserPosts(instagramUserId, accessToken) {
 
 async function exchangeCodeForToken(code) {
   try {
-    const { data } = await axios.get('https://graph.facebook.com/v22.0/oauth/access_token', {
+    const { data } = await axios.post('https://graph.facebook.com/v22.0/oauth/access_token', null, {
       params: {
         client_id: process.env.INSTAGRAM_APP_ID,
         client_secret: process.env.INSTAGRAM_APP_SECRET,
@@ -176,7 +174,7 @@ async function exchangeCodeForToken(code) {
     });
     return { accessToken: data.access_token, expiresIn: data.expires_in };
   } catch (err) {
-    logger.error('Token exchange failed', { error: err.message });
+    logger.error('Token exchange failed', { error: err.response?.data || err.message });
     return null;
   }
 }
