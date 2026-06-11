@@ -3,6 +3,13 @@ const pool = require('../db/pool');
 const instagram = require('../services/instagramService');
 const cfg = require('../config');
 
+// In-memory session store for OAuth polling (TTL: 10 minutes)
+const _sessions = new Map();
+setInterval(() => {
+  const cutoff = Date.now() - 10 * 60 * 1000;
+  for (const [k, v] of _sessions) { if (v.at < cutoff) _sessions.delete(k); }
+}, 60 * 1000);
+
 async function signIn(req, res, next) {
   try {
     const { code, device_id } = req.body;
@@ -163,8 +170,22 @@ async function instagramCallback(req, res, next) {
     );
 
     const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET, { expiresIn: '30d' });
+
+    // Store token in session map so mobile can poll for it
+    const state = req.query.state;
+    if (state) _sessions.set(state, { token, at: Date.now() });
+
     res.redirect(`com.instagrowth://auth?token=${encodeURIComponent(token)}`);
   } catch (err) { next(err); }
 }
 
-module.exports = { signIn, instagramCallback };
+async function instagramStatus(req, res) {
+  const { session_id } = req.query;
+  if (!session_id) return res.status(400).json({ error: 'session_id required' });
+  const entry = _sessions.get(session_id);
+  if (!entry) return res.json({ ready: false });
+  _sessions.delete(session_id);
+  return res.json({ ready: true, token: entry.token });
+}
+
+module.exports = { signIn, instagramCallback, instagramStatus };
