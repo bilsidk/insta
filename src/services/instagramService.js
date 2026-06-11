@@ -194,7 +194,7 @@ async function getLongLivedToken(shortLivedToken) {
     });
     return { accessToken: data.access_token, expiresIn: data.expires_in };
   } catch (err) {
-    logger.error('Long-lived token exchange failed', { error: err.response?.data || err.message });
+    console.error('Long-lived token exchange failed:', JSON.stringify(err.response?.data || err.message));
     return null;
   }
 }
@@ -215,7 +215,7 @@ async function getInstagramUserInfo(accessToken) {
       profilePicUrl: data.profile_picture_url,
     };
   } catch (err) {
-    logger.error('Fetch user info failed', { error: err.response?.data || err.message });
+    console.error('Fetch user info failed:', JSON.stringify(err.response?.data || err.message));
     // Try fallback with graph.facebook.com
     try {
       const { data } = await axios.get(`${API_BASE}/me`, {
@@ -224,7 +224,7 @@ async function getInstagramUserInfo(accessToken) {
           fields: 'id,username,account_type,profile_picture_url',
         },
       });
-      logger.info('Instagram user info (fallback)', { data });
+      console.log('Instagram user info (fallback):', JSON.stringify(data));
       return {
         instagramUserId: data.id,
         username: data.username,
@@ -232,7 +232,7 @@ async function getInstagramUserInfo(accessToken) {
         profilePicUrl: data.profile_picture_url,
       };
     } catch (err2) {
-      logger.error('Fetch user info fallback failed', { error: err2.response?.data || err2.message });
+      console.error('Fetch user info fallback failed:', JSON.stringify(err2.response?.data || err2.message));
       return null;
     }
   }
