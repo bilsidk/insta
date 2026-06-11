@@ -204,10 +204,10 @@ async function getInstagramUserInfo(accessToken) {
     const { data } = await axios.get('https://graph.instagram.com/me', {
       params: {
         access_token: accessToken,
-        fields: 'id,username,account_type,profile_picture_url',
+        fields: 'id,username',
       },
     });
-    logger.info('Instagram user info', { data });
+    console.log('Instagram user info:', JSON.stringify(data));
     return {
       instagramUserId: data.id,
       username: data.username,
