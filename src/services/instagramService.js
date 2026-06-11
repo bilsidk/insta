@@ -167,11 +167,12 @@ async function exchangeCodeForToken(code) {
     const params = new URLSearchParams();
     params.append('client_id', process.env.INSTAGRAM_APP_ID);
     params.append('client_secret', process.env.INSTAGRAM_APP_SECRET);
+    params.append('grant_type', 'authorization_code');
     params.append('redirect_uri', process.env.INSTAGRAM_REDIRECT_URI);
     params.append('code', code);
 
     const { data } = await axios.post(
-      'https://graph.facebook.com/v22.0/oauth/access_token',
+      'https://api.instagram.com/oauth/access_token',
       params.toString(),
       { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
     );
@@ -184,12 +185,11 @@ async function exchangeCodeForToken(code) {
 
 async function getLongLivedToken(shortLivedToken) {
   try {
-    const { data } = await axios.get('https://graph.facebook.com/v22.0/oauth/access_token', {
+    const { data } = await axios.get('https://graph.instagram.com/access_token', {
       params: {
-        grant_type: 'fb_exchange_token',
-        client_id: process.env.INSTAGRAM_APP_ID,
+        grant_type: 'ig_exchange_token',
         client_secret: process.env.INSTAGRAM_APP_SECRET,
-        fb_exchange_token: shortLivedToken,
+        access_token: shortLivedToken,
       },
     });
     return { accessToken: data.access_token, expiresIn: data.expires_in };
