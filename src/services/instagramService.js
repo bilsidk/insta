@@ -201,7 +201,7 @@ async function getLongLivedToken(shortLivedToken) {
 
 async function getInstagramUserInfo(accessToken) {
   try {
-    const { data } = await axios.get(`${API_BASE}/me`, {
+    const { data } = await axios.get('https://graph.instagram.com/me', {
       params: {
         access_token: accessToken,
         fields: 'id,username,account_type,profile_picture_url',
