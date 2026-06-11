@@ -4,15 +4,19 @@ let _modeCache = { mode: 'live', reason: null, at: 0 };
 let _settingsCache = { data: null, at: 0 };
 const TTL_MS = 30 * 1000;
 
+let _failWindow = [];
+const FAIL_WINDOW_MS = 5 * 60 * 1000;
+const FAIL_THRESHOLD = 25;
+
 const DEFAULTS = {
-  daily_limit_user: 50,
-  daily_limit_premium: 100,
-  coins_follow: 5,
-  coins_like: 3,
-  coins_comment: 6,
-  coins_per_slot: 8,
+  daily_limit_user:         50,
+  daily_limit_premium:      150,
+  coins_follow:             5,
+  coins_like:               3,
+  coins_comment:            6,
+  house_margin:             3,
   completion_delay_seconds: 30,
-  max_campaigns_per_user: 5,
+  max_campaigns_per_user:   5,
 };
 
 async function getMode() {
@@ -55,6 +59,25 @@ async function setMode(mode, reason = null) {
     [mode, reason]
   );
   _modeCache = { mode, reason, at: Date.now() };
+  console.log(`[APP MODE] switched to "${mode}"${reason ? ' — ' + reason : ''}`);
 }
 
-module.exports = { getMode, getSettings, updateSettings, setMode, DEFAULTS };
+async function recordApiFailure(kind) {
+  const now = Date.now();
+  _failWindow.push(now);
+  _failWindow = _failWindow.filter(t => now - t < FAIL_WINDOW_MS);
+  if (_failWindow.length >= FAIL_THRESHOLD) {
+    const current = await getMode();
+    if (current.mode !== 'degraded') {
+      await setMode('degraded', `Auto: ${_failWindow.length} API failures in 5m (last: ${kind})`);
+    }
+  }
+}
+
+async function recordApiSuccess() {
+  _failWindow = [];
+  // Don't auto-restore live — require admin to manually clear degraded mode
+  // (prevents abuse: flood 25 failures → honor mode → 1 success → back to live → repeat)
+}
+
+module.exports = { getMode, getSettings, updateSettings, setMode, recordApiFailure, recordApiSuccess, DEFAULTS };

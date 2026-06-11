@@ -1,5 +1,6 @@
 const pool = require('../db/pool');
 const cfg = require('../config');
+const settingsService = require('./settingsService');
 
 function cheatError(message, code, status = 403) {
   const e = new Error(message);
@@ -15,10 +16,14 @@ async function assertNotBanned(userId) {
 }
 
 async function assertVelocityOk(userId) {
+  const appSettings = await settingsService.getSettings();
+
   const r = await pool.query(
     `SELECT last_task_at, role,
             (SELECT COUNT(*) FROM completions
-             WHERE user_id = $1 AND completed_at > NOW() - INTERVAL '1 hour') AS last_hour
+             WHERE user_id = $1 AND completed_at > NOW() - INTERVAL '1 hour') AS last_hour,
+            (SELECT COUNT(*) FROM completions
+             WHERE user_id = $1 AND completed_at > NOW()::date) AS today
      FROM users WHERE id = $1`,
     [userId]
   );
@@ -28,11 +33,18 @@ async function assertVelocityOk(userId) {
   if (row.last_task_at) {
     const since = (Date.now() - new Date(row.last_task_at).getTime()) / 1000;
     if (since < cfg.MIN_SECONDS_BETWEEN_TASKS)
-      throw cheatError(`Wait ${Math.ceil(cfg.MIN_SECONDS_BETWEEN_TASKS - since)}s`, 'TOO_FAST', 429);
+      throw cheatError(`Slow down — wait ${Math.ceil(cfg.MIN_SECONDS_BETWEEN_TASKS - since)}s before the next task.`, 'TOO_FAST', 429);
   }
 
   if (parseInt(row.last_hour, 10) >= cfg.MAX_TASKS_PER_HOUR)
-    throw cheatError('Hourly limit reached', 'HOURLY_LIMIT', 429);
+    throw cheatError('Hourly task limit reached. Come back later.', 'HOURLY_LIMIT', 429);
+
+  const dailyLimit = row.role === 'owner' ? Infinity
+    : row.role === 'premium' ? (appSettings.daily_limit_premium || 150)
+    : (appSettings.daily_limit_user || 50);
+
+  if (parseInt(row.today, 10) >= dailyLimit)
+    throw cheatError(`Daily limit reached (${dailyLimit} tasks/day). Come back tomorrow!`, 'DAILY_LIMIT', 429);
 }
 
 async function assertDeviceOk(userId, deviceId) {
@@ -42,14 +54,14 @@ async function assertDeviceOk(userId, deviceId) {
     [deviceId]
   );
   if (parseInt(r.rows[0].n, 10) > cfg.MAX_ACCOUNTS_PER_DEVICE)
-    throw cheatError('Too many accounts on this device', 'DEVICE_FARM', 403);
+    throw cheatError('Too many accounts detected on this device.', 'DEVICE_FARM', 403);
 }
 
 async function registerDevice(userId, deviceId) {
   if (!deviceId) return;
   await pool.query('UPDATE users SET device_id = $1 WHERE id = $2', [deviceId, userId]);
   await pool.query(
-    'INSERT INTO device_accounts (device_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+    `INSERT INTO device_accounts (device_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
     [deviceId, userId]
   );
 }
