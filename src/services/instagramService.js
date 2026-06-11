@@ -207,6 +207,7 @@ async function getInstagramUserInfo(accessToken) {
         fields: 'id,username,account_type,profile_picture_url',
       },
     });
+    logger.info('Instagram user info', { data });
     return {
       instagramUserId: data.id,
       username: data.username,
@@ -215,7 +216,25 @@ async function getInstagramUserInfo(accessToken) {
     };
   } catch (err) {
     logger.error('Fetch user info failed', { error: err.response?.data || err.message });
-    return null;
+    // Try fallback with graph.facebook.com
+    try {
+      const { data } = await axios.get(`${API_BASE}/me`, {
+        params: {
+          access_token: accessToken,
+          fields: 'id,username,account_type,profile_picture_url',
+        },
+      });
+      logger.info('Instagram user info (fallback)', { data });
+      return {
+        instagramUserId: data.id,
+        username: data.username,
+        accountType: data.account_type || 'personal',
+        profilePicUrl: data.profile_picture_url,
+      };
+    } catch (err2) {
+      logger.error('Fetch user info fallback failed', { error: err2.response?.data || err2.message });
+      return null;
+    }
   }
 }
 
