@@ -18,16 +18,19 @@
 
 **Data flow:**
 ```
-Mobile → Instagram OAuth (Chrome Custom Tab via openAuth)
+Mobile → Instagram OAuth (Chrome Custom Tab via openAuth, www.instagram.com/oauth/authorize)
        → Backend /auth/instagram/callback
-       → Upserts instagram_accounts, stores JWT in _sessions map keyed by state
+       → Upserts instagram_accounts, stores {JWT, userId} in _sessions map keyed by state
        → Redirects to /auth/done?ok=1&sid=<state>
-       → Mobile polls /auth/instagram/status?session_id=<state> → gets JWT
+       → /auth/done serves HTML that bounces to com.instagrowth://auth?ok=1&sid=<state>
+       → openAuth resolves; mobile polls /auth/instagram/status?session_id=<state>&device_id=<id>
+         (enforces MAX_ACCOUNTS_PER_DEVICE + registers device) → gets JWT
        → All subsequent calls: Authorization: Bearer <JWT>
 ```
 
 **Plan A / Plan B:**
-- Plan A: Instagram Graph API verification (live mode)
+- Plan A (live mode): comment = exact via /{media}/comments; follow/like = count-delta vs
+  server-recorded baseline (task_starts, POST /tasks/:id/start)
 - Plan B: Honor mode (degraded) — triggered after 25 failures in 5 min
 - 30-min recovery timer: server probes API, auto-recovers if reachable
 - Email alert via Resend when switching to degraded
@@ -131,6 +134,14 @@ CREATE TABLE device_accounts (
   UNIQUE(device_id, user_id)
 );
 
+CREATE TABLE task_starts (
+  task_id        INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
+  user_id        INTEGER REFERENCES instagram_accounts(id) ON DELETE CASCADE,
+  baseline_count INTEGER,            -- followers_count/like_count at start; NULL = honor fallback
+  started_at     TIMESTAMP DEFAULT NOW(),
+  PRIMARY KEY (task_id, user_id)
+);
+
 CREATE TABLE app_settings (
   id             INTEGER PRIMARY KEY DEFAULT 1,
   api_mode       VARCHAR(20) DEFAULT 'live',  -- 'live' | 'degraded'
@@ -151,10 +162,11 @@ CREATE TABLE app_settings (
 
 **Auth** (`/auth`, rate limited 10/15min)
 ```
-POST   /auth/instagram          body:{code, device_id} → {token, user, instagram_connected}
+POST   /auth/instagram          body:{code, device_id} → {token, user, instagram_connected}  (legacy, unused by app)
 GET    /auth/instagram/callback query:{code,state,error} → redirect to /auth/done?ok=1&sid=<state>
-GET    /auth/instagram/status   query:{session_id} → {ready:bool, token?}
-GET    /auth/done               → 200 "" (intercepted by InAppBrowser)
+GET    /auth/instagram/status   query:{session_id, device_id?} → {ready:bool, token?}
+       -- enforces MAX_ACCOUNTS_PER_DEVICE at token pickup, registers device; 403 DEVICE_LIMIT
+GET    /auth/done               → HTML page that redirects to com.instagrowth://auth?<query>
 ```
 
 **Users** (`/users`)
@@ -175,8 +187,11 @@ GET    /tasks/pricing        → {follow:{reward,slot_cost}, like:..., comment:.
 GET    /tasks                query:{type?} → [{task + owner info}]  (excludes own tasks, completed)
 GET    /tasks/my             → [{task + completions_count, progress_pct, can_pause, can_resume, can_cancel}]
 POST   /tasks                body:{task_type,followers_wanted,instagram_media_id,...} → {task,coins_spent,slot_cost,earner_reward,owner}
-       -- campaignLimiter: 20/hr per IP on this route only
-POST   /tasks/:id/verify     body:{started_at, device_id?} → {verified, method, degraded, coins_earned, new_balance, message}
+       -- campaignLimiter: 20/hr per IP on this route only; media_id required for like/comment
+POST   /tasks/:id/start      → {ok, started_at(ms), delay_seconds}
+       -- records baseline_count (followers/like count via owner token) in task_starts; idempotent
+POST   /tasks/:id/verify     body:{started_at?, device_id?} → {verified, method, degraded, coins_earned, new_balance, message}
+       -- uses task_starts.started_at when present (client started_at = legacy fallback)
 PATCH  /tasks/:id/pause      → {ok, status, remaining_slots}
 PATCH  /tasks/:id/resume     → {ok, status, remaining_slots}
 PATCH  /tasks/:id/cancel     → {ok, refunded_coins, remaining_slots}
@@ -192,10 +207,11 @@ GET    /transactions         → [{id, amount, type, description, created_at}]
 GET    /admin/status         → {mode, settings, stats}
 PATCH  /admin/settings       body:{coins_follow?,coins_like?,coins_comment?,house_margin?,...} → {ok}
 POST   /admin/mode           body:{mode:'live'|'degraded', reason?} → {ok}
-POST   /admin/promote        body:{user_id, role} → {ok}
-POST   /admin/grant-coins    body:{user_id, amount} → {ok}
-GET    /admin/users          query:{page?,limit?} → [{user}]
-POST   /admin/ban            body:{user_id, reason} → {ok}
+POST   /admin/promote        body:{username, role:'premium'|'user'} → {ok}
+POST   /admin/grant-coins    body:{username, amount} → {ok}
+GET    /admin/users          query:{page?,username?} → {users, total, page, pages}
+POST   /admin/ban            body:{username, reason?, unban?} → {ok}
+       -- NOTE: username is not unique in DB — admin ops should migrate to user id
 ```
 
 **Health**
@@ -232,15 +248,16 @@ GET    /health               → {status:'ok', timestamp}
 7. `slot_cost=0` stored for owner campaigns (prevents refund coin minting)
 8. Removed dead `req.userEmail`; server.js fail-fast on missing `JWT_SECRET`/`DATABASE_URL`; `DB_SSL_NO_VERIFY` env var
 
-### Mobile Auth Flow (post-security-fix)
+### Mobile Auth Flow (current)
 ```js
 // instagramAuth.js
 state = generateState()         // ~33 chars
-authUrl = buildAuthUrl(state)   // includes force_reauth=true
-result = await InAppBrowser.openAuth(authUrl, DONE_URL, { ephemeralWebSession:true, forceCloseOnRedirection:true })
-// result.url = DONE_URL?ok=1&sid=<state>
+authUrl = buildAuthUrl(state)   // www.instagram.com/oauth/authorize, force_authentication=1,
+                                // scope=instagram_business_basic,instagram_business_manage_comments
+result = await InAppBrowser.openAuth(authUrl, 'com.instagrowth://auth', { ephemeralWebSession:true, forceCloseOnRedirection:true })
+// backend /auth/done bounces Custom Tab to com.instagrowth://auth?ok=1&sid=<state>
 sid = params.get('sid') || state
-token = await fetch(`${API_URL}/auth/instagram/status?session_id=${sid}`) → .token
+token = await fetch(`${API_URL}/auth/instagram/status?session_id=${sid}&device_id=${deviceId}`) → .token
 ```
 
 ### Plan A Verification — Rebuilt 2026-06-12
