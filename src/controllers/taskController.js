@@ -239,16 +239,25 @@ async function verifyTask(req, res, next) {
       return res.status(e.status || 403).json({ error: e.message, code: e.code });
     }
 
-    // Server-recorded start is authoritative; client started_at only as legacy fallback
-    const startRes = await pool.query(
-      'SELECT baseline_count, started_at FROM task_starts WHERE task_id = $1 AND user_id = $2',
+    // One query for task + this user's recorded start + the doer's account
+    const taskRes = await pool.query(
+      `SELECT t.*,
+              ts.baseline_count, ts.started_at AS ts_started_at,
+              doer.instagram_user_id AS doer_ig_id, doer.username AS doer_username
+       FROM tasks t
+       LEFT JOIN task_starts ts ON ts.task_id = t.id AND ts.user_id = $2
+       LEFT JOIN instagram_accounts doer ON doer.id = $2
+       WHERE t.id = $1`,
       [taskId, req.userId]
     );
-    const startRow = startRes.rows[0] || null;
+    if (!taskRes.rows.length) return res.status(404).json({ error: 'Task not found' });
+    const task = taskRes.rows[0];
+    const hasStart = task.ts_started_at !== null && task.ts_started_at !== undefined;
 
+    // Server-recorded start is authoritative; client started_at only as legacy fallback
     let startedAt;
-    if (startRow) {
-      startedAt = new Date(startRow.started_at).getTime();
+    if (hasStart) {
+      startedAt = new Date(task.ts_started_at).getTime();
     } else {
       startedAt = Number(started_at);
       if (!started_at || !Number.isFinite(startedAt) || startedAt > Date.now() || startedAt < Date.now() - 86400000)
@@ -266,10 +275,6 @@ async function verifyTask(req, res, next) {
       });
     }
 
-    const taskRes = await pool.query('SELECT * FROM tasks WHERE id = $1', [taskId]);
-    if (!taskRes.rows.length) return res.status(404).json({ error: 'Task not found' });
-    const task = taskRes.rows[0];
-
     if (task.status === 'paused')
       return res.status(409).json({ error: 'Campaign is paused', code: 'CAMPAIGN_PAUSED' });
     if (task.status === 'cancelled')
@@ -279,11 +284,7 @@ async function verifyTask(req, res, next) {
     if (task.user_id === req.userId)
       return res.status(403).json({ error: 'Cannot complete your own campaign' });
 
-    const doerAcc = await pool.query(
-      'SELECT instagram_user_id, username FROM instagram_accounts WHERE id = $1',
-      [req.userId]
-    );
-    if (!doerAcc.rows.length)
+    if (!task.doer_ig_id)
       return res.status(400).json({ error: 'Connect Instagram first' });
 
     const mode = await settings.getMode();
@@ -296,9 +297,9 @@ async function verifyTask(req, res, next) {
         if (task.task_type === 'comment') {
           verified = await instagram.verifyComment(
             task.user_id, task.instagram_media_id,
-            doerAcc.rows[0].instagram_user_id, doerAcc.rows[0].username
+            task.doer_ig_id, task.doer_username
           );
-        } else if (startRow && startRow.baseline_count !== null) {
+        } else if (hasStart && task.baseline_count !== null) {
           // Count completions API-verified after this user's start so concurrent
           // verifiers can't all ride the same +1 delta
           const sinceRes = await pool.query(
@@ -308,9 +309,9 @@ async function verifyTask(req, res, next) {
           );
           const verifiedSince = parseInt(sinceRes.rows[0].n, 10);
           if (task.task_type === 'follow')
-            verified = await instagram.verifyFollow(task.user_id, startRow.baseline_count, verifiedSince);
+            verified = await instagram.verifyFollow(task.user_id, task.baseline_count, verifiedSince);
           else if (task.task_type === 'like')
-            verified = await instagram.verifyLike(task.user_id, task.instagram_media_id, startRow.baseline_count, verifiedSince);
+            verified = await instagram.verifyLike(task.user_id, task.instagram_media_id, task.baseline_count, verifiedSince);
         }
         await settings.recordApiSuccess();
 
@@ -354,7 +355,7 @@ async function verifyTask(req, res, next) {
     await dbc.query(
       `INSERT INTO completions (task_id, user_id, instagram_user_id, verify_method, verify_status, coins_awarded)
        VALUES ($1, $2, $3, $4, $5, $6)`,
-      [taskId, req.userId, doerAcc.rows[0].instagram_user_id,
+      [taskId, req.userId, task.doer_ig_id,
        verifyMethod, verifyMethod === 'api' ? 'verified' : 'pending', task.reward]
     );
 

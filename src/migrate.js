@@ -121,6 +121,8 @@ CREATE INDEX IF NOT EXISTS idx_completions_user ON completions(user_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_user ON transactions(user_id);
 CREATE INDEX IF NOT EXISTS idx_instagram_accounts_ig_user ON instagram_accounts(instagram_user_id);
 CREATE INDEX IF NOT EXISTS idx_device_accounts_device ON device_accounts(device_id);
+CREATE INDEX IF NOT EXISTS idx_task_starts_user ON task_starts(user_id);
+CREATE INDEX IF NOT EXISTS idx_completions_task_verified ON completions(task_id, verified_at);
 `;
 
 // Non-destructive migration for existing deployments
@@ -142,12 +144,21 @@ CREATE TABLE IF NOT EXISTS task_starts (
   started_at     TIMESTAMP DEFAULT NOW(),
   PRIMARY KEY (task_id, user_id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_task_starts_user ON task_starts(user_id);
+-- verifyTask counts api completions since a timestamp on the hot path
+CREATE INDEX IF NOT EXISTS idx_completions_task_verified ON completions(task_id, verified_at);
 `;
+
+// Idempotent additive migration — safe to call on every server boot.
+async function runAdditiveMigration() {
+  await pool.query(ADDITIVE);
+}
 
 async function migrate() {
   try {
     // Apply additive changes first (safe on existing DB)
-    await pool.query(ADDITIVE);
+    await runAdditiveMigration();
     console.log('[Migrate] Additive migration applied');
     // Full schema only if explicitly requested
     if (process.argv.includes('--full')) {
@@ -161,4 +172,8 @@ async function migrate() {
   }
 }
 
-migrate();
+module.exports = { runAdditiveMigration };
+
+// Only run the CLI flow when executed directly (node src/migrate.js),
+// not when required by the server for boot-time migration.
+if (require.main === module) migrate();

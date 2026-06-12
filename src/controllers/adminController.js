@@ -63,18 +63,42 @@ async function setMode(req, res, next) {
   } catch (err) { next(err); }
 }
 
+// Resolves a target account to exactly one id. Prefers an explicit user_id;
+// falls back to username but REFUSES when the username is ambiguous — usernames
+// are not unique in the schema (only instagram_user_id is), so a rename collision
+// could otherwise mutate the wrong account (or every match).
+async function resolveTargetId(body, res) {
+  if (body.user_id !== undefined && body.user_id !== null && body.user_id !== '') {
+    const id = parseInt(body.user_id, 10);
+    if (!Number.isInteger(id)) { res.status(400).json({ error: 'Invalid user_id' }); return null; }
+    const r = await pool.query('SELECT id FROM instagram_accounts WHERE id = $1', [id]);
+    if (!r.rows.length) { res.status(404).json({ error: 'User not found' }); return null; }
+    return id;
+  }
+  if (!body.username) { res.status(400).json({ error: 'username or user_id required' }); return null; }
+  const r = await pool.query(
+    'SELECT id FROM instagram_accounts WHERE LOWER(username) = LOWER($1)', [body.username]
+  );
+  if (!r.rows.length) { res.status(404).json({ error: 'User not found' }); return null; }
+  if (r.rows.length > 1) {
+    res.status(409).json({ error: `Multiple accounts use "${body.username}" — search and target the exact user.`, code: 'AMBIGUOUS_USERNAME' });
+    return null;
+  }
+  return r.rows[0].id;
+}
+
 async function promoteUser(req, res, next) {
   try {
     if (!(await requireOwner(req, res))) return;
-    const { username, role } = req.body;
-    if (!username || !['premium', 'user'].includes(role))
-      return res.status(400).json({ error: 'username and role (premium/user) required' });
+    const { role } = req.body;
+    if (!['premium', 'user'].includes(role))
+      return res.status(400).json({ error: 'role (premium/user) required' });
+    const id = await resolveTargetId(req.body, res);
+    if (id === null) return;
     const r = await pool.query(
-      `UPDATE instagram_accounts SET role = $1, is_premium = $2
-       WHERE LOWER(username) = LOWER($3) RETURNING id, role`,
-      [role, role === 'premium', username]
+      `UPDATE instagram_accounts SET role = $1, is_premium = $2 WHERE id = $3 RETURNING id, role`,
+      [role, role === 'premium', id]
     );
-    if (!r.rows.length) return res.status(404).json({ error: 'User not found' });
     res.json({ ok: true, user: r.rows[0] });
   } catch (err) { next(err); }
 }
@@ -82,21 +106,20 @@ async function promoteUser(req, res, next) {
 async function grantCoins(req, res, next) {
   try {
     if (!(await requireOwner(req, res))) return;
-    const { username, amount } = req.body;
-    const coins = parseInt(amount, 10);
-    if (!username || isNaN(coins) || coins <= 0)
-      return res.status(400).json({ error: 'username and positive amount required' });
+    const coins = parseInt(req.body.amount, 10);
+    if (isNaN(coins) || coins <= 0)
+      return res.status(400).json({ error: 'positive amount required' });
+    const id = await resolveTargetId(req.body, res);
+    if (id === null) return;
     const r = await pool.query(
-      `UPDATE instagram_accounts SET coins = coins + $1
-       WHERE LOWER(username) = LOWER($2) RETURNING id, coins`,
-      [coins, username]
+      `UPDATE instagram_accounts SET coins = coins + $1 WHERE id = $2 RETURNING id, username, coins`,
+      [coins, id]
     );
-    if (!r.rows.length) return res.status(404).json({ error: 'User not found' });
     await pool.query(
       `INSERT INTO transactions (user_id, amount, type, description) VALUES ($1, $2, 'bonus', 'admin:manual_grant')`,
       [r.rows[0].id, coins]
     );
-    res.json({ ok: true, username, granted: coins, new_balance: r.rows[0].coins });
+    res.json({ ok: true, username: r.rows[0].username, granted: coins, new_balance: r.rows[0].coins });
   } catch (err) { next(err); }
 }
 
@@ -131,24 +154,23 @@ async function getUsers(req, res, next) {
 async function banUser(req, res, next) {
   try {
     if (!(await requireOwner(req, res))) return;
-    const { username, reason, unban } = req.body;
-    if (!username) return res.status(400).json({ error: 'username required' });
+    const { reason, unban } = req.body;
+    const id = await resolveTargetId(req.body, res);
+    if (id === null) return;
 
     if (unban) {
       const r = await pool.query(
         `UPDATE instagram_accounts SET is_banned = FALSE, ban_reason = NULL, banned_at = NULL
-         WHERE LOWER(username) = LOWER($1) RETURNING id, is_banned`,
-        [username]
+         WHERE id = $1 RETURNING id, is_banned`,
+        [id]
       );
-      if (!r.rows.length) return res.status(404).json({ error: 'User not found' });
       return res.json({ ok: true, user: r.rows[0] });
     }
     const r = await pool.query(
       `UPDATE instagram_accounts SET is_banned = TRUE, ban_reason = $2, banned_at = NOW()
-       WHERE LOWER(username) = LOWER($1) RETURNING id, is_banned, ban_reason`,
-      [username, reason || 'Banned by admin']
+       WHERE id = $1 RETURNING id, is_banned, ban_reason`,
+      [id, reason || 'Banned by admin']
     );
-    if (!r.rows.length) return res.status(404).json({ error: 'User not found' });
     res.json({ ok: true, user: r.rows[0] });
   } catch (err) { next(err); }
 }

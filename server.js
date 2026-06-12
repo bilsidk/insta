@@ -13,11 +13,20 @@ const app = require('./src/app');
 const logger = require('./src/utils/logger');
 const pool = require('./src/db/pool');
 const { startAuditScheduler } = require('./src/services/auditScheduler');
+const { runAdditiveMigration } = require('./src/migrate');
 
 const PORT = process.env.PORT || 4000;
 
-const server = app.listen(PORT, () => {
+const server = app.listen(PORT, async () => {
   logger.info(`InstaGrowth API running on port ${PORT}`);
+  // Apply idempotent additive migration on boot (creates task_starts + indexes
+  // if missing). Non-fatal — never block serving if it fails.
+  try {
+    await runAdditiveMigration();
+    logger.info('Additive migration applied on boot');
+  } catch (err) {
+    logger.error('Boot migration failed (continuing)', { error: err.message });
+  }
   startAuditScheduler();
 });
 
