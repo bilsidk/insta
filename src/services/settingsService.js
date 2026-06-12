@@ -28,8 +28,8 @@ const DEFAULTS = {
 // ─── Email ────────────────────────────────────────────────────────────────────
 
 async function _sendAlert(subject, text) {
-  const to = process.env.ALERT_EMAIL;
-  if (!to) { logger.warn('[ALERT] ALERT_EMAIL not set — skipping email'); return; }
+  const to = process.env.ALERT_EMAIL || process.env.OWNER_EMAIL;
+  if (!to) { logger.warn('[ALERT] ALERT_EMAIL/OWNER_EMAIL not set — skipping email'); return; }
   if (!process.env.RESEND_API_KEY) { logger.warn('[ALERT] RESEND_API_KEY not set — skipping email'); return; }
   try {
     const resend = new Resend(process.env.RESEND_API_KEY);
@@ -57,11 +57,11 @@ async function probeInstagramApi() {
     );
     if (!res.rows.length) {
       // No tokens available — just check if the endpoint is reachable
-      await axios.get('https://graph.facebook.com/', { timeout: 8000 });
+      await axios.get('https://graph.instagram.com/', { timeout: 8000 });
       return true;
     }
     const token = res.rows[0].access_token;
-    await axios.get('https://graph.facebook.com/v22.0/me', {
+    await axios.get('https://graph.instagram.com/v22.0/me', {
       params: { fields: 'id', access_token: token },
       timeout: 8000,
     });
@@ -153,6 +153,13 @@ async function setMode(mode, reason = null) {
     [mode, reason]
   );
   _modeCache = { mode, reason, at: Date.now() };
+  // Keep the recovery timer and failure window consistent however the switch happened
+  if (mode === 'degraded') {
+    _startRecoveryTimer();
+  } else {
+    _stopRecoveryTimer();
+    _failWindow = [];
+  }
   logger.info(`[APP MODE] switched to "${mode}"${reason ? ' — ' + reason : ''}`);
 }
 

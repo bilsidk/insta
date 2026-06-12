@@ -1,7 +1,7 @@
 const { Router } = require('express');
 const rateLimit = require('express-rate-limit');
 const { authenticate } = require('../middleware/auth');
-const { getAvailableTasks, getMyTasks, createTask, verifyTask, getPricing } = require('../controllers/taskController');
+const { getAvailableTasks, getMyTasks, createTask, startTask, verifyTask, getPricing } = require('../controllers/taskController');
 const { pauseCampaign, resumeCampaign, cancelCampaign } = require('../controllers/campaignController');
 
 const campaignLimiter = rateLimit({
@@ -17,6 +17,7 @@ router.get('/pricing', authenticate, getPricing);
 router.get('/',        authenticate, getAvailableTasks);
 router.get('/my',      authenticate, getMyTasks);
 router.post('/',       authenticate, campaignLimiter, createTask);
+router.post('/:id/start',    authenticate, startTask);
 router.post('/:id/verify',   authenticate, verifyTask);
 router.patch('/:id/pause',   authenticate, pauseCampaign);
 router.patch('/:id/resume',  authenticate, resumeCampaign);

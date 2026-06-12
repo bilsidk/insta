@@ -93,6 +93,14 @@ CREATE TABLE IF NOT EXISTS device_accounts (
   UNIQUE(device_id, user_id)
 );
 
+CREATE TABLE IF NOT EXISTS task_starts (
+  task_id        INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
+  user_id        INTEGER REFERENCES instagram_accounts(id) ON DELETE CASCADE,
+  baseline_count INTEGER,
+  started_at     TIMESTAMP DEFAULT NOW(),
+  PRIMARY KEY (task_id, user_id)
+);
+
 CREATE TABLE IF NOT EXISTS app_settings (
   id INTEGER PRIMARY KEY DEFAULT 1,
   api_mode VARCHAR(20) DEFAULT 'live',
@@ -126,6 +134,14 @@ CREATE TABLE IF NOT EXISTS account_history (
 );
 
 ALTER TABLE instagram_accounts ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
+
+CREATE TABLE IF NOT EXISTS task_starts (
+  task_id        INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
+  user_id        INTEGER REFERENCES instagram_accounts(id) ON DELETE CASCADE,
+  baseline_count INTEGER,
+  started_at     TIMESTAMP DEFAULT NOW(),
+  PRIMARY KEY (task_id, user_id)
+);
 `;
 
 async function migrate() {

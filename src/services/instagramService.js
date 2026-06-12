@@ -2,7 +2,8 @@ const axios = require('axios');
 const pool = require('../db/pool');
 const logger = require('../utils/logger');
 
-const API_BASE = 'https://graph.facebook.com/v22.0';
+// Instagram API with Instagram Login — tokens are only valid on graph.instagram.com
+const API_BASE = 'https://graph.instagram.com/v22.0';
 
 function isTransportError(err) {
   if (!err.response) return true; // network / timeout
@@ -10,17 +11,16 @@ function isTransportError(err) {
 }
 
 async function refreshToken(accountId) {
-  const acc = await pool.query('SELECT refresh_token, access_token FROM instagram_accounts WHERE id = $1', [accountId]);
-  const token = acc.rows[0]?.refresh_token || acc.rows[0]?.access_token;
+  const acc = await pool.query('SELECT access_token FROM instagram_accounts WHERE id = $1', [accountId]);
+  const token = acc.rows[0]?.access_token;
   if (!token) return null;
 
   try {
-    const { data } = await axios.get(`${API_BASE}/oauth/access_token`, {
+    // IG-login long-lived tokens refresh via ig_refresh_token (token must be valid and >24h old)
+    const { data } = await axios.get('https://graph.instagram.com/refresh_access_token', {
       params: {
-        grant_type: 'fb_exchange_token',
-        client_id: process.env.INSTAGRAM_APP_ID,
-        client_secret: process.env.INSTAGRAM_APP_SECRET,
-        fb_exchange_token: token,
+        grant_type: 'ig_refresh_token',
+        access_token: token,
       },
     });
     const newExpiry = new Date(Date.now() + (data.expires_in || 60 * 24 * 3600) * 1000);
@@ -37,7 +37,7 @@ async function refreshToken(accountId) {
 
 async function getValidToken(accountId) {
   const acc = await pool.query(
-    'SELECT id, access_token, token_expiry, refresh_token FROM instagram_accounts WHERE id = $1 AND is_active = TRUE',
+    'SELECT id, access_token, token_expiry FROM instagram_accounts WHERE id = $1 AND is_active = TRUE',
     [accountId]
   );
   if (!acc.rows.length) return null;
@@ -55,74 +55,63 @@ async function getValidTokenForUser(userId) {
   return getValidToken(userId);
 }
 
-async function verifyFollow(ownerUserId, followerInstagramId) {
+// Current follower count of the campaign owner (their own token, /me)
+async function getFollowersCount(ownerUserId) {
   const token = await getValidTokenForUser(ownerUserId);
-  if (!token) return false;
-
-  const ownerAcc = await pool.query(
-    'SELECT instagram_user_id FROM instagram_accounts WHERE id = $1',
-    [ownerUserId]
-  );
-  const ownerIgId = ownerAcc.rows[0]?.instagram_user_id;
-  if (!ownerIgId) return false;
-
-  let after = null;
-  for (let page = 0; page < 10; page++) {
-    const params = { access_token: token, limit: 200 };
-    if (after) params.after = after;
-
-    let data;
-    try {
-      ({ data } = await axios.get(`${API_BASE}/${ownerIgId}/followers`, { params }));
-    } catch (err) {
-      if (isTransportError(err)) throw err;
-      logger.warn('Follow verification API error', { ownerUserId, status: err.response?.status });
-      throw err;
-    }
-
-    const found = data.data?.some(u => String(u.id) === String(followerInstagramId));
-    if (found) return true;
-
-    after = data.paging?.cursors?.after;
-    if (!after) break;
+  if (!token) return null;
+  try {
+    const { data } = await axios.get(`${API_BASE}/me`, {
+      params: { access_token: token, fields: 'followers_count' },
+    });
+    return typeof data.followers_count === 'number' ? data.followers_count : null;
+  } catch (err) {
+    if (isTransportError(err)) throw err;
+    logger.warn('followers_count fetch error', { ownerUserId, status: err.response?.status });
+    throw err;
   }
-  return false;
 }
 
-async function verifyLike(ownerUserId, mediaId, userInstagramId) {
+// Current like count of a media object (owner token)
+async function getLikeCount(ownerUserId, mediaId) {
   const token = await getValidTokenForUser(ownerUserId);
-  if (!token) return false;
-
-  let after = null;
-  for (let page = 0; page < 10; page++) {
-    const params = { access_token: token, limit: 200 };
-    if (after) params.after = after;
-
-    let data;
-    try {
-      ({ data } = await axios.get(`${API_BASE}/${mediaId}/likes`, { params }));
-    } catch (err) {
-      if (isTransportError(err)) throw err;
-      logger.warn('Like verification API error', { ownerUserId, mediaId, status: err.response?.status });
-      throw err;
-    }
-
-    const found = data.data?.some(u => String(u.id) === String(userInstagramId));
-    if (found) return true;
-
-    after = data.paging?.cursors?.after;
-    if (!after) break;
+  if (!token) return null;
+  try {
+    const { data } = await axios.get(`${API_BASE}/${mediaId}`, {
+      params: { access_token: token, fields: 'like_count' },
+    });
+    return typeof data.like_count === 'number' ? data.like_count : null;
+  } catch (err) {
+    if (isTransportError(err)) throw err;
+    logger.warn('like_count fetch error', { ownerUserId, mediaId, status: err.response?.status });
+    throw err;
   }
-  return false;
 }
 
-async function verifyComment(ownerUserId, mediaId, userInstagramId) {
+// Follow/like verification is count-delta based: the IG API exposes no follower or
+// liker lists. Caller supplies the baseline recorded at task start plus how many
+// other completions were verified since then.
+async function verifyFollow(ownerUserId, baseline, verifiedSince = 0) {
+  if (baseline === null || baseline === undefined) return null; // cannot API-verify
+  const current = await getFollowersCount(ownerUserId);
+  if (current === null) return null;
+  return current >= baseline + verifiedSince + 1;
+}
+
+async function verifyLike(ownerUserId, mediaId, baseline, verifiedSince = 0) {
+  if (baseline === null || baseline === undefined) return null;
+  const current = await getLikeCount(ownerUserId, mediaId);
+  if (current === null) return null;
+  return current >= baseline + verifiedSince + 1;
+}
+
+// Comments are the only listable edge — exact per-user verification
+async function verifyComment(ownerUserId, mediaId, userInstagramId, username) {
   const token = await getValidTokenForUser(ownerUserId);
   if (!token) return false;
 
   let after = null;
   for (let page = 0; page < 10; page++) {
-    const params = { access_token: token, limit: 200 };
+    const params = { access_token: token, fields: 'from,text', limit: 50 };
     if (after) params.after = after;
 
     let data;
@@ -134,7 +123,10 @@ async function verifyComment(ownerUserId, mediaId, userInstagramId) {
       throw err;
     }
 
-    const found = data.data?.some(c => String(c.from?.id || c.user?.id) === String(userInstagramId));
+    const found = data.data?.some(c =>
+      String(c.from?.id) === String(userInstagramId) ||
+      (username && c.from?.username && c.from.username.toLowerCase() === username.toLowerCase())
+    );
     if (found) return true;
 
     after = data.paging?.cursors?.after;
@@ -201,14 +193,14 @@ async function getInstagramUserInfo(accessToken) {
     const { data } = await axios.get('https://graph.instagram.com/v22.0/me', {
       params: {
         access_token: accessToken,
-        fields: 'id,username,name',
+        fields: 'id,username,name,profile_picture_url',
       },
     });
     return {
       instagramUserId: data.id,
       username: data.username || data.name || `user_${data.id}`,
       accountType: 'business',
-      profilePicUrl: null,
+      profilePicUrl: data.profile_picture_url || null,
     };
   } catch (err) {
     logger.error('Fetch user info failed', { error: err.response?.data || err.message });
@@ -218,6 +210,7 @@ async function getInstagramUserInfo(accessToken) {
 
 module.exports = {
   verifyFollow, verifyLike, verifyComment,
+  getFollowersCount, getLikeCount,
   fetchUserPosts, exchangeCodeForToken, getLongLivedToken,
   getInstagramUserInfo, getValidToken, getValidTokenForUser,
 };

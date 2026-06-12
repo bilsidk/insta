@@ -1,8 +1,12 @@
 import InAppBrowser from 'react-native-inappbrowser-reborn';
 import { Linking } from 'react-native';
 import Config from 'react-native-config';
+import { getDeviceId } from './api';
 
-const DONE_URL = `${Config.API_URL}/auth/done`;
+// The backend's /auth/done page bounces the Custom Tab back into the app on
+// this scheme (registered in AndroidManifest) — an https redirectUrl can never
+// re-enter the app without verified App Links.
+const APP_RETURN_URL = 'com.instagrowth://auth';
 
 function generateState() {
   // 3 segments of base-36 ≈ 33 chars, well above the 16-char minimum the server enforces
@@ -15,21 +19,24 @@ function generateState() {
 
 function buildAuthUrl(state) {
   return (
-    `https://api.instagram.com/oauth/authorize` +
-    `?force_reauth=true` +
-    `&client_id=${Config.INSTAGRAM_APP_ID}` +
+    `https://www.instagram.com/oauth/authorize` +
+    `?client_id=${Config.INSTAGRAM_APP_ID}` +
     `&redirect_uri=${encodeURIComponent(Config.API_URL + '/auth/instagram/callback')}` +
     `&response_type=code` +
-    `&scope=instagram_business_basic` +
+    `&scope=${encodeURIComponent('instagram_business_basic,instagram_business_manage_comments')}` +
+    `&force_authentication=1` +
     `&state=${state}`
   );
 }
 
 async function _pollForToken(sessionId) {
-  const url = `${Config.API_URL}/auth/instagram/status?session_id=${encodeURIComponent(sessionId)}`;
+  const deviceId = await getDeviceId();
+  const url = `${Config.API_URL}/auth/instagram/status` +
+    `?session_id=${encodeURIComponent(sessionId)}` +
+    (deviceId ? `&device_id=${encodeURIComponent(deviceId)}` : '');
   const resp = await fetch(url);
-  if (!resp.ok) return null;
-  const data = await resp.json();
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(data.error || 'Sign-in failed');
   return data.token || null;
 }
 
@@ -37,11 +44,14 @@ export async function initiateInstagramAuth() {
   const state = generateState();
   const authUrl = buildAuthUrl(state);
 
+  console.log('[Auth] authUrl:', authUrl);
+
   try {
     const available = await InAppBrowser.isAvailable();
+    console.log('[Auth] InAppBrowser available:', available);
 
     if (available) {
-      const result = await InAppBrowser.openAuth(authUrl, DONE_URL, {
+      const result = await InAppBrowser.openAuth(authUrl, APP_RETURN_URL, {
         // Android
         showTitle: false,
         enableUrlBarHiding: true,
@@ -55,7 +65,8 @@ export async function initiateInstagramAuth() {
         const qs = result.url.split('?')[1]?.split('#')[0] || '';
         const params = new URLSearchParams(qs);
 
-        if (params.get('error')) return null;
+        const error = params.get('error');
+        if (error) throw new Error(decodeURIComponent(error));
 
         // Token is stored server-side keyed by state/sid; fetch it now
         const sid = params.get('sid') || state;
@@ -72,14 +83,16 @@ export async function initiateInstagramAuth() {
 }
 
 async function _fallbackDeepLink(authUrl, state) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const sub = Linking.addEventListener('url', async ({ url }) => {
-      if (!url?.startsWith(DONE_URL)) return;
+      if (!url?.startsWith(APP_RETURN_URL)) return;
       sub.remove();
       const qs = url.split('?')[1]?.split('#')[0] || '';
       const params = new URLSearchParams(qs);
       const sid = params.get('sid') || state;
-      resolve(await _pollForToken(sid));
+      try {
+        resolve(await _pollForToken(sid));
+      } catch (e) { reject(e); }
     });
     Linking.openURL(authUrl);
     setTimeout(() => { sub.remove(); resolve(null); }, 5 * 60 * 1000);

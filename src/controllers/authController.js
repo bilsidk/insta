@@ -135,7 +135,7 @@ async function instagramCallback(req, res, next) {
     const token = jwt.sign({ userId }, process.env.JWT_SECRET, { expiresIn: '30d' });
 
     // Token goes into session store only — not in the redirect URL
-    _sessions.set(state, { token, at: Date.now() });
+    _sessions.set(state, { token, userId, at: Date.now() });
     res.redirect(`${BASE}/auth/done?ok=1&sid=${encodeURIComponent(state)}`);
   } catch (err) {
     const BASE2 = BASE_URL();
@@ -145,13 +145,34 @@ async function instagramCallback(req, res, next) {
   }
 }
 
-async function instagramStatus(req, res) {
-  const { session_id } = req.query;
-  if (!session_id) return res.status(400).json({ error: 'session_id required' });
-  const entry = _sessions.get(session_id);
-  if (!entry) return res.json({ ready: false });
-  _sessions.delete(session_id);
-  return res.json({ ready: true, token: entry.token });
+async function instagramStatus(req, res, next) {
+  try {
+    const { session_id, device_id } = req.query;
+    if (!session_id) return res.status(400).json({ error: 'session_id required' });
+    const entry = _sessions.get(session_id);
+    if (!entry) return res.json({ ready: false });
+
+    // The OAuth callback has no device context, so the device cap is enforced
+    // here — at token pickup — before the app ever gets a usable session.
+    if (device_id && entry.userId) {
+      const deviceCount = await pool.query(
+        'SELECT COUNT(DISTINCT user_id) AS n FROM device_accounts WHERE device_id = $1 AND user_id != $2',
+        [device_id, entry.userId]
+      );
+      if (parseInt(deviceCount.rows[0].n, 10) >= cfg.MAX_ACCOUNTS_PER_DEVICE) {
+        _sessions.delete(session_id);
+        return res.status(403).json({ ready: true, error: 'Too many accounts on this device.', code: 'DEVICE_LIMIT' });
+      }
+      await pool.query('UPDATE instagram_accounts SET device_id = $1 WHERE id = $2', [device_id, entry.userId]);
+      await pool.query(
+        'INSERT INTO device_accounts (device_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+        [device_id, entry.userId]
+      );
+    }
+
+    _sessions.delete(session_id);
+    return res.json({ ready: true, token: entry.token });
+  } catch (err) { next(err); }
 }
 
 module.exports = { signIn, instagramCallback, instagramStatus };

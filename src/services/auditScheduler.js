@@ -11,13 +11,11 @@ const REAUDIT_EVERY_HOURS = 72;
 const MAX_AUDITS  = 3;
 const BATCH_SIZE  = 50;
 
+// Only comments can be re-verified per-user (the IG API has no follower/liker
+// list edges) — follow/like completions are verified once via count deltas.
 async function checkValid(comp) {
-  if (comp.task_type === 'follow')
-    return instagram.verifyFollow(comp.owner_user_id, comp.instagram_user_id);
-  if (comp.task_type === 'like')
-    return instagram.verifyLike(comp.owner_user_id, comp.instagram_media_id, comp.instagram_user_id);
   if (comp.task_type === 'comment')
-    return instagram.verifyComment(comp.owner_user_id, comp.instagram_media_id, comp.instagram_user_id);
+    return instagram.verifyComment(comp.owner_user_id, comp.instagram_media_id, comp.instagram_user_id, comp.username);
   return true;
 }
 
@@ -57,12 +55,15 @@ async function reclaim(comp) {
 async function runPass(quick) {
   const delay = quick ? QUICK_DELAY_HOURS : DEEP_DELAY_HOURS;
   const due = await pool.query(
-    `SELECT c.id, c.user_id, c.instagram_user_id, c.coins_awarded, c.audit_count,
+    `SELECT c.id, c.task_id, c.user_id, c.instagram_user_id, c.coins_awarded, c.audit_count,
             t.task_type, t.instagram_media_id,
-            t.user_id AS owner_user_id
+            t.user_id AS owner_user_id,
+            ia.username
      FROM completions c
      JOIN tasks t ON t.id = c.task_id
+     LEFT JOIN instagram_accounts ia ON ia.id = c.user_id
      WHERE c.verify_method = 'api' AND c.verify_status = 'verified'
+       AND t.task_type = 'comment'
        AND c.audit_count < $1
        AND ($2 = TRUE OR c.audit_count > 0)
        AND c.completed_at < NOW() - ($3 || ' hours')::interval

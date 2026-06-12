@@ -68,6 +68,8 @@ async function createTask(req, res, next) {
     if (!slots || slots < 1) return res.status(400).json({ error: 'Slot count required' });
     if (!['follow', 'like', 'comment'].includes(task_type))
       return res.status(400).json({ error: 'Invalid task_type' });
+    if (task_type !== 'follow' && !instagram_media_id)
+      return res.status(400).json({ error: 'instagram_media_id required for like/comment campaigns' });
 
     const acc = await client.query(
       'SELECT * FROM instagram_accounts WHERE id = $1',
@@ -160,6 +162,69 @@ async function createTask(req, res, next) {
   }
 }
 
+// Records the verification baseline server-side when the user opens the task.
+// follow → owner followers_count, like → media like_count, comment → exact check later (no baseline).
+async function startTask(req, res, next) {
+  try {
+    const taskId = parseInt(req.params.id, 10);
+
+    const taskRes = await pool.query('SELECT * FROM tasks WHERE id = $1', [taskId]);
+    if (!taskRes.rows.length) return res.status(404).json({ error: 'Task not found' });
+    const task = taskRes.rows[0];
+
+    if (task.status !== 'active' || task.remaining_slots <= 0)
+      return res.status(409).json({ error: 'Campaign no longer available', code: 'CAMPAIGN_UNAVAILABLE' });
+    if (task.user_id === req.userId)
+      return res.status(403).json({ error: 'Cannot complete your own campaign' });
+
+    const existing = await pool.query(
+      'SELECT started_at FROM task_starts WHERE task_id = $1 AND user_id = $2',
+      [taskId, req.userId]
+    );
+
+    const appSettings = await settings.getSettings();
+    const delaySeconds = appSettings.completion_delay_seconds ?? 30;
+
+    // Keep the original start: re-opening must not refresh the baseline or reset the clock
+    if (existing.rows.length) {
+      return res.json({
+        ok: true,
+        started_at: new Date(existing.rows[0].started_at).getTime(),
+        delay_seconds: delaySeconds,
+      });
+    }
+
+    const mode = await settings.getMode();
+    let baseline = null;
+    if (mode.mode !== 'degraded') {
+      try {
+        if (task.task_type === 'follow')
+          baseline = await instagram.getFollowersCount(task.user_id);
+        else if (task.task_type === 'like')
+          baseline = await instagram.getLikeCount(task.user_id, task.instagram_media_id);
+        await settings.recordApiSuccess();
+      } catch (err) {
+        await settings.recordApiFailure(String(err.response?.status || 'other'));
+        baseline = null; // verify falls back to honor for this completion
+      }
+    }
+
+    const r = await pool.query(
+      `INSERT INTO task_starts (task_id, user_id, baseline_count)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (task_id, user_id) DO UPDATE SET task_id = task_starts.task_id
+       RETURNING started_at`,
+      [taskId, req.userId, baseline]
+    );
+
+    res.json({
+      ok: true,
+      started_at: new Date(r.rows[0].started_at).getTime(),
+      delay_seconds: delaySeconds,
+    });
+  } catch (err) { next(err); }
+}
+
 async function verifyTask(req, res, next) {
   const dbc = await pool.connect();
   try {
@@ -174,9 +239,21 @@ async function verifyTask(req, res, next) {
       return res.status(e.status || 403).json({ error: e.message, code: e.code });
     }
 
-    const startedAt = Number(started_at);
-    if (!started_at || !Number.isFinite(startedAt) || startedAt > Date.now() || startedAt < Date.now() - 86400000)
-      return res.status(400).json({ error: 'Invalid started_at', code: 'INVALID_STARTED_AT' });
+    // Server-recorded start is authoritative; client started_at only as legacy fallback
+    const startRes = await pool.query(
+      'SELECT baseline_count, started_at FROM task_starts WHERE task_id = $1 AND user_id = $2',
+      [taskId, req.userId]
+    );
+    const startRow = startRes.rows[0] || null;
+
+    let startedAt;
+    if (startRow) {
+      startedAt = new Date(startRow.started_at).getTime();
+    } else {
+      startedAt = Number(started_at);
+      if (!started_at || !Number.isFinite(startedAt) || startedAt > Date.now() || startedAt < Date.now() - 86400000)
+        return res.status(400).json({ error: 'Invalid started_at', code: 'INVALID_STARTED_AT' });
+    }
 
     const appSettings = await settings.getSettings();
     const delaySeconds = appSettings.completion_delay_seconds ?? 30;
@@ -203,7 +280,7 @@ async function verifyTask(req, res, next) {
       return res.status(403).json({ error: 'Cannot complete your own campaign' });
 
     const doerAcc = await pool.query(
-      'SELECT instagram_user_id FROM instagram_accounts WHERE id = $1',
+      'SELECT instagram_user_id, username FROM instagram_accounts WHERE id = $1',
       [req.userId]
     );
     if (!doerAcc.rows.length)
@@ -214,19 +291,35 @@ async function verifyTask(req, res, next) {
     let verifyMethod = 'honor';
 
     if (!degraded) {
-      verifyMethod = 'api';
       try {
-        let verified = false;
-        if (task.task_type === 'follow')
-          verified = await instagram.verifyFollow(task.user_id, doerAcc.rows[0].instagram_user_id);
-        else if (task.task_type === 'like')
-          verified = await instagram.verifyLike(task.user_id, task.instagram_media_id, doerAcc.rows[0].instagram_user_id);
-        else if (task.task_type === 'comment')
-          verified = await instagram.verifyComment(task.user_id, task.instagram_media_id, doerAcc.rows[0].instagram_user_id);
+        let verified = null;
+        if (task.task_type === 'comment') {
+          verified = await instagram.verifyComment(
+            task.user_id, task.instagram_media_id,
+            doerAcc.rows[0].instagram_user_id, doerAcc.rows[0].username
+          );
+        } else if (startRow && startRow.baseline_count !== null) {
+          // Count completions API-verified after this user's start so concurrent
+          // verifiers can't all ride the same +1 delta
+          const sinceRes = await pool.query(
+            `SELECT COUNT(*) AS n FROM completions
+             WHERE task_id = $1 AND verify_method = 'api' AND verified_at > $2`,
+            [taskId, new Date(startedAt)]
+          );
+          const verifiedSince = parseInt(sinceRes.rows[0].n, 10);
+          if (task.task_type === 'follow')
+            verified = await instagram.verifyFollow(task.user_id, startRow.baseline_count, verifiedSince);
+          else if (task.task_type === 'like')
+            verified = await instagram.verifyLike(task.user_id, task.instagram_media_id, startRow.baseline_count, verifiedSince);
+        }
         await settings.recordApiSuccess();
 
-        if (!verified)
+        if (verified === true) {
+          verifyMethod = 'api';
+        } else if (verified === false) {
           return res.status(400).json({ verified: false, error: 'Action not detected. Complete the task in Instagram then try again.' });
+        }
+        // verified === null → no baseline / owner token unavailable → honor fallback
       } catch (err) {
         await settings.recordApiFailure(String(err.response?.status || 'other'));
         const after = await settings.getMode();
@@ -319,4 +412,4 @@ async function getPricing(req, res, next) {
   } catch (err) { next(err); }
 }
 
-module.exports = { getAvailableTasks, getMyTasks, createTask, verifyTask, getPricing };
+module.exports = { getAvailableTasks, getMyTasks, createTask, startTask, verifyTask, getPricing };
