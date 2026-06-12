@@ -1,5 +1,14 @@
 require('dotenv').config();
 
+if (!process.env.JWT_SECRET) {
+  console.error('FATAL: JWT_SECRET is not set');
+  process.exit(1);
+}
+if (!process.env.DATABASE_URL) {
+  console.error('FATAL: DATABASE_URL is not set');
+  process.exit(1);
+}
+
 const app = require('./src/app');
 const logger = require('./src/utils/logger');
 const pool = require('./src/db/pool');

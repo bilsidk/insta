@@ -15,9 +15,9 @@ async function checkValid(comp) {
   if (comp.task_type === 'follow')
     return instagram.verifyFollow(comp.owner_user_id, comp.instagram_user_id);
   if (comp.task_type === 'like')
-    return instagram.verifyLike(comp.instagram_media_id, comp.instagram_user_id);
+    return instagram.verifyLike(comp.owner_user_id, comp.instagram_media_id, comp.instagram_user_id);
   if (comp.task_type === 'comment')
-    return instagram.verifyComment(comp.instagram_media_id, comp.instagram_user_id);
+    return instagram.verifyComment(comp.owner_user_id, comp.instagram_media_id, comp.instagram_user_id);
   return true;
 }
 

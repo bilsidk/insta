@@ -20,11 +20,31 @@ async function deleteMe(req, res, next) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
     const r = await client.query(
-      'DELETE FROM instagram_accounts WHERE id = $1 RETURNING id',
+      'SELECT instagram_user_id, is_banned, ban_reason FROM instagram_accounts WHERE id = $1',
       [req.userId]
     );
-    if (!r.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'User not found' }); }
+    if (!r.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const { instagram_user_id, is_banned, ban_reason } = r.rows[0];
+
+    // Preserve ban status and bonus grant in history so re-signup can't evade bans or farm bonus
+    await client.query(
+      `INSERT INTO account_history (instagram_user_id, bonus_granted, was_banned, ban_reason, updated_at)
+       VALUES ($1, TRUE, $2, $3, NOW())
+       ON CONFLICT (instagram_user_id) DO UPDATE SET
+         was_banned = account_history.was_banned OR $2,
+         ban_reason = CASE WHEN $2 THEN $3 ELSE account_history.ban_reason END,
+         bonus_granted = TRUE,
+         updated_at = NOW()`,
+      [instagram_user_id, is_banned, ban_reason]
+    );
+
+    await client.query('DELETE FROM instagram_accounts WHERE id = $1', [req.userId]);
     await client.query('COMMIT');
     res.json({ ok: true, message: 'Account permanently deleted.' });
   } catch (err) { await client.query('ROLLBACK'); next(err); }

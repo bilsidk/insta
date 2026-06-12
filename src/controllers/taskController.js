@@ -121,6 +121,8 @@ async function createTask(req, res, next) {
                     : me.role === 'premium' ? cfg.TIER.PREMIUM
                     : cfg.TIER.USER;
 
+    const storedSlotCost = isOwner ? 0 : slotCost;
+
     const taskRes = await client.query(
       `INSERT INTO tasks (user_id, account_id, task_type,
           target_instagram_user_id, instagram_media_id, instagram_media_thumbnail,
@@ -131,7 +133,7 @@ async function createTask(req, res, next) {
        task_type === 'follow' ? me.instagram_user_id : null,
        sanitize(instagram_media_id), sanitize(instagram_media_thumbnail),
        sanitize(instagram_media_permalink), sanitize(instagram_media_caption),
-       taskReward, slotCost, slots, ownerTier]
+       taskReward, storedSlotCost, slots, ownerTier]
     );
 
     const txKey = isOwner
@@ -218,9 +220,9 @@ async function verifyTask(req, res, next) {
         if (task.task_type === 'follow')
           verified = await instagram.verifyFollow(task.user_id, doerAcc.rows[0].instagram_user_id);
         else if (task.task_type === 'like')
-          verified = await instagram.verifyLike(task.instagram_media_id, doerAcc.rows[0].instagram_user_id);
+          verified = await instagram.verifyLike(task.user_id, task.instagram_media_id, doerAcc.rows[0].instagram_user_id);
         else if (task.task_type === 'comment')
-          verified = await instagram.verifyComment(task.instagram_media_id, doerAcc.rows[0].instagram_user_id);
+          verified = await instagram.verifyComment(task.user_id, task.instagram_media_id, doerAcc.rows[0].instagram_user_id);
         await settings.recordApiSuccess();
 
         if (!verified)
@@ -239,7 +241,7 @@ async function verifyTask(req, res, next) {
     await dbc.query('BEGIN');
 
     const lockRes = await dbc.query(
-      'SELECT remaining_slots FROM tasks WHERE id = $1 AND remaining_slots > 0 FOR UPDATE',
+      `SELECT remaining_slots FROM tasks WHERE id = $1 AND status = 'active' AND remaining_slots > 0 FOR UPDATE`,
       [taskId]
     );
     if (!lockRes.rows.length) {

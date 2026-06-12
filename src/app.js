@@ -34,14 +34,6 @@ const authLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-const campaignLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  max: 20,
-  message: { error: 'Too many campaigns created' },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
 const adminLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 60,
@@ -57,7 +49,7 @@ app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().
 app.use('/auth',         authLimiter,    authRoutes);
 app.use('/users',                        userRoutes);
 app.use('/accounts',                     accountRoutes);
-app.use('/tasks',        campaignLimiter, taskRoutes);
+app.use('/tasks',        taskRoutes);
 app.use('/transactions',                 transactionRoutes);
 app.use('/admin',        adminLimiter,   adminRoutes);
 

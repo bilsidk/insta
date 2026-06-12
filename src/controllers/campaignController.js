@@ -37,15 +37,30 @@ async function cancelCampaign(req, res, next) {
   const client = await pool.connect();
   try {
     const taskId = parseInt(req.params.id, 10);
-    const task = await assertOwnsTask(taskId, req.userId);
-    if (!task) return res.status(403).json({ error: 'Campaign not found or not yours' });
-    if (['cancelled', 'completed'].includes(task.status))
-      return res.status(400).json({ error: `Campaign is already ${task.status}` });
-
-    const isOwner = task.role === 'owner';
-    const refundCoins = isOwner ? 0 : task.remaining_slots * (task.slot_cost || 0);
 
     await client.query('BEGIN');
+
+    // Read ownership and lock inside the transaction to prevent cancel/verify race
+    const taskRes = await client.query(
+      `SELECT t.*, ia.role
+       FROM tasks t JOIN instagram_accounts ia ON ia.id = $2
+       WHERE t.id = $1 AND t.user_id = $2 FOR UPDATE`,
+      [taskId, req.userId]
+    );
+    if (!taskRes.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'Campaign not found or not yours' });
+    }
+    const task = taskRes.rows[0];
+
+    if (['cancelled', 'completed'].includes(task.status)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: `Campaign is already ${task.status}` });
+    }
+
+    // Use stored slot_cost so owner can never mint coins (slot_cost=0 for owners)
+    const refundCoins = task.remaining_slots * (task.slot_cost || 0);
+
     await client.query("UPDATE tasks SET status = 'cancelled' WHERE id = $1", [taskId]);
     if (refundCoins > 0) {
       await client.query('UPDATE instagram_accounts SET coins = coins + $1 WHERE id = $2', [refundCoins, req.userId]);

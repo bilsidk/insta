@@ -3,6 +3,8 @@ const pool = require('../db/pool');
 const instagram = require('../services/instagramService');
 const cfg = require('../config');
 
+const BASE_URL = () => process.env.PUBLIC_BASE_URL || 'https://insta-production-91be.up.railway.app';
+
 // In-memory session store for OAuth polling (TTL: 10 minutes)
 const _sessions = new Map();
 setInterval(() => {
@@ -13,10 +15,27 @@ setInterval(() => {
 async function _upsertAccount(userInfo, accessToken, expiresIn, deviceId) {
   const expiry = new Date(Date.now() + (expiresIn || 5184000) * 1000);
 
+  // Check history: block banned re-signups, skip bonus for returning users
+  const hist = await pool.query(
+    'SELECT bonus_granted, was_banned, ban_reason FROM account_history WHERE instagram_user_id = $1',
+    [userInfo.instagramUserId]
+  );
+  const history = hist.rows[0];
+
+  if (history?.was_banned) {
+    const err = new Error(history.ban_reason || 'Account permanently banned');
+    err.status = 403;
+    err.code = 'ACCOUNT_BANNED';
+    throw err;
+  }
+
+  const alreadyGotBonus = history?.bonus_granted || false;
+  const startingCoins = alreadyGotBonus ? 0 : 50;
+
   const r = await pool.query(
     `INSERT INTO instagram_accounts
        (instagram_user_id, username, account_type, profile_pic_url, access_token, refresh_token, token_expiry, coins)
-     VALUES ($1, $2, $3, $4, $5, $5, $6, 50)
+     VALUES ($1, $2, $3, $4, $5, $5, $6, $7)
      ON CONFLICT (instagram_user_id) DO UPDATE SET
        username        = EXCLUDED.username,
        account_type    = EXCLUDED.account_type,
@@ -26,15 +45,21 @@ async function _upsertAccount(userInfo, accessToken, expiresIn, deviceId) {
        token_expiry    = EXCLUDED.token_expiry
      RETURNING id, (xmax = 0) AS is_new`,
     [userInfo.instagramUserId, userInfo.username, userInfo.accountType,
-     userInfo.profilePicUrl, accessToken, expiry]
+     userInfo.profilePicUrl, accessToken, expiry, startingCoins]
   );
 
   const { id, is_new } = r.rows[0];
 
-  if (is_new) {
+  if (is_new && !alreadyGotBonus) {
     await pool.query(
       `INSERT INTO transactions (user_id, amount, type, description) VALUES ($1, 50, 'bonus', 'tx:welcome_bonus')`,
       [id]
+    );
+    await pool.query(
+      `INSERT INTO account_history (instagram_user_id, bonus_granted, updated_at)
+       VALUES ($1, TRUE, NOW())
+       ON CONFLICT (instagram_user_id) DO UPDATE SET bonus_granted = TRUE, updated_at = NOW()`,
+      [userInfo.instagramUserId]
     );
   }
 
@@ -77,34 +102,47 @@ async function signIn(req, res, next) {
     const token = jwt.sign({ userId }, process.env.JWT_SECRET, { expiresIn: '30d' });
     const { rows } = await pool.query('SELECT * FROM instagram_accounts WHERE id = $1', [userId]);
     res.json({ token, user: rows[0], instagram_connected: true });
-  } catch (err) { next(err); }
+  } catch (err) {
+    if (err.code === 'ACCOUNT_BANNED') return res.status(403).json({ error: err.message, code: err.code });
+    next(err);
+  }
 }
 
 async function instagramCallback(req, res, next) {
+  const BASE = BASE_URL();
   try {
     const { code: rawCode, error, state } = req.query;
     const code = rawCode?.split('#')[0];
 
     if (error || !code)
-      return res.redirect(`https://insta-production-91be.up.railway.app/auth/done?error=${encodeURIComponent(error || 'cancelled')}`);
+      return res.redirect(`${BASE}/auth/done?error=${encodeURIComponent(error || 'cancelled')}`);
 
-    console.log('[Callback] exchanging code:', code?.slice(0, 20), 'at', new Date().toISOString());
+    // Reject short/missing states — mitigates CSRF and session fixation
+    if (!state || state.length < 16)
+      return res.redirect(`${BASE}/auth/done?error=invalid_state`);
+
     const tokenResult = await instagram.exchangeCodeForToken(code);
-    if (!tokenResult) return res.redirect('https://insta-production-91be.up.railway.app/auth/done?error=token_exchange_failed');
+    if (!tokenResult) return res.redirect(`${BASE}/auth/done?error=token_exchange_failed`);
 
     const longLived = await instagram.getLongLivedToken(tokenResult.accessToken);
     const accessToken = longLived?.accessToken || tokenResult.accessToken;
     const expiresIn   = longLived?.expiresIn   || tokenResult.expiresIn;
 
     const userInfo = await instagram.getInstagramUserInfo(accessToken);
-    if (!userInfo) return res.redirect('https://insta-production-91be.up.railway.app/auth/done?error=profile_fetch_failed');
+    if (!userInfo) return res.redirect(`${BASE}/auth/done?error=profile_fetch_failed`);
 
     const userId = await _upsertAccount(userInfo, accessToken, expiresIn, null);
     const token = jwt.sign({ userId }, process.env.JWT_SECRET, { expiresIn: '30d' });
 
-    if (state) _sessions.set(state, { token, at: Date.now() });
-    res.redirect(`https://insta-production-91be.up.railway.app/auth/done?token=${encodeURIComponent(token)}`);
-  } catch (err) { next(err); }
+    // Token goes into session store only — not in the redirect URL
+    _sessions.set(state, { token, at: Date.now() });
+    res.redirect(`${BASE}/auth/done?ok=1&sid=${encodeURIComponent(state)}`);
+  } catch (err) {
+    const BASE2 = BASE_URL();
+    if (err.code === 'ACCOUNT_BANNED')
+      return res.redirect(`${BASE2}/auth/done?error=${encodeURIComponent(err.message)}`);
+    next(err);
+  }
 }
 
 async function instagramStatus(req, res) {

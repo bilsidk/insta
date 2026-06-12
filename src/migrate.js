@@ -10,6 +10,15 @@ DROP TABLE IF EXISTS tasks CASCADE;
 DROP TABLE IF EXISTS instagram_accounts CASCADE;
 DROP TABLE IF EXISTS users CASCADE;
 DROP TABLE IF EXISTS app_settings CASCADE;
+DROP TABLE IF EXISTS account_history CASCADE;
+
+CREATE TABLE IF NOT EXISTS account_history (
+  instagram_user_id VARCHAR(255) PRIMARY KEY,
+  bonus_granted     BOOLEAN DEFAULT FALSE,
+  was_banned        BOOLEAN DEFAULT FALSE,
+  ban_reason        TEXT,
+  updated_at        TIMESTAMP DEFAULT NOW()
+);
 
 CREATE TABLE IF NOT EXISTS instagram_accounts (
   id SERIAL PRIMARY KEY,
@@ -30,6 +39,7 @@ CREATE TABLE IF NOT EXISTS instagram_accounts (
   reclaim_count INTEGER DEFAULT 0,
   trust_score INTEGER DEFAULT 100,
   banned_at TIMESTAMP,
+  is_active BOOLEAN DEFAULT TRUE,
   created_at TIMESTAMP DEFAULT NOW()
 );
 
@@ -105,10 +115,29 @@ CREATE INDEX IF NOT EXISTS idx_instagram_accounts_ig_user ON instagram_accounts(
 CREATE INDEX IF NOT EXISTS idx_device_accounts_device ON device_accounts(device_id);
 `;
 
+// Non-destructive migration for existing deployments
+const ADDITIVE = `
+CREATE TABLE IF NOT EXISTS account_history (
+  instagram_user_id VARCHAR(255) PRIMARY KEY,
+  bonus_granted     BOOLEAN DEFAULT FALSE,
+  was_banned        BOOLEAN DEFAULT FALSE,
+  ban_reason        TEXT,
+  updated_at        TIMESTAMP DEFAULT NOW()
+);
+
+ALTER TABLE instagram_accounts ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
+`;
+
 async function migrate() {
   try {
-    await pool.query(SCHEMA);
-    console.log('[Migrate] Schema applied successfully');
+    // Apply additive changes first (safe on existing DB)
+    await pool.query(ADDITIVE);
+    console.log('[Migrate] Additive migration applied');
+    // Full schema only if explicitly requested
+    if (process.argv.includes('--full')) {
+      await pool.query(SCHEMA);
+      console.log('[Migrate] Full schema applied');
+    }
     process.exit(0);
   } catch (err) {
     console.error('[Migrate] Error:', err.message);

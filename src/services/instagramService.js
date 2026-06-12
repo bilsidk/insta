@@ -4,6 +4,11 @@ const logger = require('../utils/logger');
 
 const API_BASE = 'https://graph.facebook.com/v22.0';
 
+function isTransportError(err) {
+  if (!err.response) return true; // network / timeout
+  return err.response.status >= 500;
+}
+
 async function refreshToken(accountId) {
   const acc = await pool.query('SELECT refresh_token, access_token FROM instagram_accounts WHERE id = $1', [accountId]);
   const token = acc.rows[0]?.refresh_token || acc.rows[0]?.access_token;
@@ -54,91 +59,88 @@ async function verifyFollow(ownerUserId, followerInstagramId) {
   const token = await getValidTokenForUser(ownerUserId);
   if (!token) return false;
 
-  try {
-    const ownerAcc = await pool.query(
-      'SELECT instagram_user_id FROM instagram_accounts WHERE id = $1',
-      [ownerUserId]
-    );
-    const ownerIgId = ownerAcc.rows[0]?.instagram_user_id;
-    if (!ownerIgId) return false;
+  const ownerAcc = await pool.query(
+    'SELECT instagram_user_id FROM instagram_accounts WHERE id = $1',
+    [ownerUserId]
+  );
+  const ownerIgId = ownerAcc.rows[0]?.instagram_user_id;
+  if (!ownerIgId) return false;
 
-    let after = null;
-    for (let page = 0; page < 10; page++) {
-      const params = { access_token: token, limit: 200 };
-      if (after) params.after = after;
+  let after = null;
+  for (let page = 0; page < 10; page++) {
+    const params = { access_token: token, limit: 200 };
+    if (after) params.after = after;
 
-      const { data } = await axios.get(`${API_BASE}/${ownerIgId}/followers`, { params });
-      const found = data.data?.some(u => String(u.id) === String(followerInstagramId));
-      if (found) return true;
-
-      after = data.paging?.cursors?.after;
-      if (!after) break;
+    let data;
+    try {
+      ({ data } = await axios.get(`${API_BASE}/${ownerIgId}/followers`, { params }));
+    } catch (err) {
+      if (isTransportError(err)) throw err;
+      logger.warn('Follow verification API error', { ownerUserId, status: err.response?.status });
+      throw err;
     }
-    return false;
-  } catch (err) {
-    logger.warn('Follow verification failed', { ownerUserId, error: err.message });
-    return false;
+
+    const found = data.data?.some(u => String(u.id) === String(followerInstagramId));
+    if (found) return true;
+
+    after = data.paging?.cursors?.after;
+    if (!after) break;
   }
+  return false;
 }
 
-async function verifyLike(mediaId, userInstagramId) {
-  const { rows } = await pool.query(
-    `SELECT t.user_id FROM tasks t JOIN instagram_accounts ia ON ia.id = t.account_id
-     WHERE t.instagram_media_id = $1 LIMIT 1`,
-    [mediaId]
-  );
-  if (!rows.length) return false;
-  const token = await getValidTokenForUser(rows[0].user_id);
+async function verifyLike(ownerUserId, mediaId, userInstagramId) {
+  const token = await getValidTokenForUser(ownerUserId);
   if (!token) return false;
 
-  try {
-    let after = null;
-    for (let page = 0; page < 10; page++) {
-      const params = { access_token: token, limit: 200 };
-      if (after) params.after = after;
+  let after = null;
+  for (let page = 0; page < 10; page++) {
+    const params = { access_token: token, limit: 200 };
+    if (after) params.after = after;
 
-      const { data } = await axios.get(`${API_BASE}/${mediaId}/likes`, { params });
-      const found = data.data?.some(u => String(u.id) === String(userInstagramId));
-      if (found) return true;
-
-      after = data.paging?.cursors?.after;
-      if (!after) break;
+    let data;
+    try {
+      ({ data } = await axios.get(`${API_BASE}/${mediaId}/likes`, { params }));
+    } catch (err) {
+      if (isTransportError(err)) throw err;
+      logger.warn('Like verification API error', { ownerUserId, mediaId, status: err.response?.status });
+      throw err;
     }
-    return false;
-  } catch (err) {
-    logger.warn('Like verification failed', { mediaId, error: err.message });
-    return false;
+
+    const found = data.data?.some(u => String(u.id) === String(userInstagramId));
+    if (found) return true;
+
+    after = data.paging?.cursors?.after;
+    if (!after) break;
   }
+  return false;
 }
 
-async function verifyComment(mediaId, userInstagramId) {
-  const { rows } = await pool.query(
-    `SELECT t.user_id FROM tasks t JOIN instagram_accounts ia ON ia.id = t.account_id
-     WHERE t.instagram_media_id = $1 LIMIT 1`,
-    [mediaId]
-  );
-  if (!rows.length) return false;
-  const token = await getValidTokenForUser(rows[0].user_id);
+async function verifyComment(ownerUserId, mediaId, userInstagramId) {
+  const token = await getValidTokenForUser(ownerUserId);
   if (!token) return false;
 
-  try {
-    let after = null;
-    for (let page = 0; page < 10; page++) {
-      const params = { access_token: token, limit: 200 };
-      if (after) params.after = after;
+  let after = null;
+  for (let page = 0; page < 10; page++) {
+    const params = { access_token: token, limit: 200 };
+    if (after) params.after = after;
 
-      const { data } = await axios.get(`${API_BASE}/${mediaId}/comments`, { params });
-      const found = data.data?.some(c => String(c.from?.id || c.user?.id) === String(userInstagramId));
-      if (found) return true;
-
-      after = data.paging?.cursors?.after;
-      if (!after) break;
+    let data;
+    try {
+      ({ data } = await axios.get(`${API_BASE}/${mediaId}/comments`, { params }));
+    } catch (err) {
+      if (isTransportError(err)) throw err;
+      logger.warn('Comment verification API error', { ownerUserId, mediaId, status: err.response?.status });
+      throw err;
     }
-    return false;
-  } catch (err) {
-    logger.warn('Comment verification failed', { mediaId, error: err.message });
-    return false;
+
+    const found = data.data?.some(c => String(c.from?.id || c.user?.id) === String(userInstagramId));
+    if (found) return true;
+
+    after = data.paging?.cursors?.after;
+    if (!after) break;
   }
+  return false;
 }
 
 async function fetchUserPosts(instagramUserId, accessToken) {
@@ -189,7 +191,7 @@ async function getLongLivedToken(shortLivedToken) {
     });
     return { accessToken: data.access_token, expiresIn: data.expires_in };
   } catch (err) {
-    console.error('Long-lived token exchange failed:', JSON.stringify(err.response?.data || err.message));
+    logger.error('Long-lived token exchange failed', { error: err.response?.data || err.message });
     return null;
   }
 }
@@ -202,7 +204,6 @@ async function getInstagramUserInfo(accessToken) {
         fields: 'id,username,name',
       },
     });
-    console.log('Instagram user info:', JSON.stringify(data));
     return {
       instagramUserId: data.id,
       username: data.username || data.name || `user_${data.id}`,
@@ -210,7 +211,7 @@ async function getInstagramUserInfo(accessToken) {
       profilePicUrl: null,
     };
   } catch (err) {
-    console.error('Fetch user info failed:', JSON.stringify(err.response?.data || err.message));
+    logger.error('Fetch user info failed', { error: err.response?.data || err.message });
     return null;
   }
 }
