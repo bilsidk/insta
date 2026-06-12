@@ -293,10 +293,18 @@ The old API verification was structurally broken (called nonexistent `graph.face
 - `getInstagramUserInfo` now fetches `profile_picture_url`
 - PostDetailScreen uses server `delay_seconds` (was hardcoded 30s)
 
+### Optimizations 2026-06-12 (commit `9a5bfb9`)
+- **Boot migration**: server.js runs idempotent `runAdditiveMigration()` on listen
+  → `task_starts` + indexes auto-created on every deploy (no manual `node src/migrate.js`).
+  CLI path guarded by `require.main === module`.
+- **verifyTask hot path**: task_starts + tasks + doer collapsed into ONE JOIN query (was 3).
+- **Indexes**: `task_starts(user_id)`, `completions(task_id, verified_at)`.
+- **Admin safety**: promote/grant/ban resolve to a single account id via `resolveTargetId()`;
+  refuse on ambiguous (non-unique) username (409 AMBIGUOUS_USERNAME); accept explicit `user_id`.
+
 **PENDING:**
-1. Run `node src/migrate.js` (creates `task_starts`) — REQUIRED before new verify code works
-2. Enable `instagram_business_manage_comments` permission in Meta app dashboard
-3. Rebuild mobile app (`npx react-native run-android`) and test full login + verify flow on device
+1. Enable `instagram_business_manage_comments` permission in Meta app dashboard
+2. Rebuild mobile app (`npx react-native run-android`) and test full login + verify flow on device
 
 ### Known Issues
 - `InstagramAuthModal.jsx` (`D:\insta\mobile\src\components\`) still exists but is unused — leftover from WebView approach
