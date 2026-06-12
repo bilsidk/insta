@@ -74,8 +74,8 @@ async function signIn(req, res, next) {
     const expiry = new Date(Date.now() + (expiresIn || 5184000) * 1000);
     await pool.query(
       `INSERT INTO instagram_accounts
-         (user_id, instagram_user_id, username, account_type, profile_pic_url, access_token, refresh_token, token_expiry)
-       VALUES ($1, $2, $3, $4, $5, $6, $6, $7)
+         (user_id, instagram_user_id, username, account_type, profile_pic_url, access_token, refresh_token, token_expiry, is_active)
+       VALUES ($1, $2, $3, $4, $5, $6, $6, $7, TRUE)
        ON CONFLICT (instagram_user_id) DO UPDATE SET
          user_id       = EXCLUDED.user_id,
          username      = EXCLUDED.username,
@@ -158,8 +158,8 @@ async function instagramCallback(req, res, next) {
     const expiry = new Date(Date.now() + (expiresIn || 5184000) * 1000);
     await pool.query(
       `INSERT INTO instagram_accounts
-         (user_id, instagram_user_id, username, account_type, profile_pic_url, access_token, refresh_token, token_expiry)
-       VALUES ($1, $2, $3, $4, $5, $6, $6, $7)
+         (user_id, instagram_user_id, username, account_type, profile_pic_url, access_token, refresh_token, token_expiry, is_active)
+       VALUES ($1, $2, $3, $4, $5, $6, $6, $7, TRUE)
        ON CONFLICT (instagram_user_id) DO UPDATE SET
          user_id = EXCLUDED.user_id, username = EXCLUDED.username,
          account_type = EXCLUDED.account_type, profile_pic_url = EXCLUDED.profile_pic_url,
