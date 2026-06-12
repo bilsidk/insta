@@ -3,10 +3,13 @@ const pool = require('../db/pool');
 async function getMe(req, res, next) {
   try {
     const r = await pool.query(
-      `SELECT u.*,
+      `SELECT u.id, u.name, u.avatar, u.coins, u.role, u.is_premium, u.is_banned, u.created_at,
+              ia.username AS instagram_username, ia.profile_pic_url,
               (SELECT COUNT(*) FROM completions WHERE user_id = u.id) AS tasks_completed,
-              (SELECT COUNT(*) FROM tasks WHERE user_id = u.id) AS campaigns_count
-       FROM users u WHERE u.id = $1`,
+              (SELECT COUNT(*) FROM tasks WHERE user_id = u.id) AS campaigns_created
+       FROM users u
+       LEFT JOIN instagram_accounts ia ON ia.user_id = u.id
+       WHERE u.id = $1`,
       [req.userId]
     );
     if (!r.rows.length) return res.status(404).json({ error: 'User not found' });

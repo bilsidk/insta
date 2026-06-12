@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   instagram_media_permalink TEXT,
   instagram_media_caption TEXT,
   reward INTEGER NOT NULL,
+  slot_cost INTEGER NOT NULL DEFAULT 0,
   remaining_slots INTEGER NOT NULL,
   total_slots INTEGER NOT NULL,
   status VARCHAR(20) DEFAULT 'active',
@@ -52,15 +53,29 @@ CREATE TABLE IF NOT EXISTS tasks (
   created_at TIMESTAMP DEFAULT NOW()
 );
 
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS slot_cost INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE instagram_accounts ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
+
 CREATE TABLE IF NOT EXISTS completions (
   id SERIAL PRIMARY KEY,
   task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
   user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
   instagram_user_id VARCHAR(255),
+  verify_method VARCHAR(20) DEFAULT 'api',
+  verify_status VARCHAR(20) DEFAULT 'verified',
+  coins_awarded INTEGER DEFAULT 0,
+  last_audit_at TIMESTAMP,
+  audit_count INTEGER DEFAULT 0,
   verified_at TIMESTAMP DEFAULT NOW(),
   completed_at TIMESTAMP DEFAULT NOW(),
   UNIQUE(task_id, user_id)
 );
+
+ALTER TABLE completions ADD COLUMN IF NOT EXISTS verify_method VARCHAR(20) DEFAULT 'api';
+ALTER TABLE completions ADD COLUMN IF NOT EXISTS verify_status VARCHAR(20) DEFAULT 'verified';
+ALTER TABLE completions ADD COLUMN IF NOT EXISTS coins_awarded INTEGER DEFAULT 0;
+ALTER TABLE completions ADD COLUMN IF NOT EXISTS last_audit_at TIMESTAMP;
+ALTER TABLE completions ADD COLUMN IF NOT EXISTS audit_count INTEGER DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS transactions (
   id SERIAL PRIMARY KEY,
