@@ -47,12 +47,7 @@ async function getValidToken(accountId) {
 }
 
 async function getValidTokenForUser(userId) {
-  const acc = await pool.query(
-    'SELECT id FROM instagram_accounts WHERE user_id = $1 AND is_active = TRUE LIMIT 1',
-    [userId]
-  );
-  if (!acc.rows.length) return null;
-  return getValidToken(acc.rows[0].id);
+  return getValidToken(userId);
 }
 
 async function verifyFollow(ownerUserId, followerInstagramId) {

@@ -10,7 +10,7 @@ function cheatError(message, code, status = 403) {
 }
 
 async function assertNotBanned(userId) {
-  const r = await pool.query('SELECT is_banned, ban_reason FROM users WHERE id = $1', [userId]);
+  const r = await pool.query('SELECT is_banned, ban_reason FROM instagram_accounts WHERE id = $1', [userId]);
   if (r.rows[0]?.is_banned)
     throw cheatError(r.rows[0].ban_reason || 'Account suspended', 'BANNED', 403);
 }
@@ -24,7 +24,7 @@ async function assertVelocityOk(userId) {
              WHERE user_id = $1 AND completed_at > NOW() - INTERVAL '1 hour') AS last_hour,
             (SELECT COUNT(*) FROM completions
              WHERE user_id = $1 AND completed_at > NOW()::date) AS today
-     FROM users WHERE id = $1`,
+     FROM instagram_accounts WHERE id = $1`,
     [userId]
   );
   const row = r.rows[0];
@@ -59,7 +59,7 @@ async function assertDeviceOk(userId, deviceId) {
 
 async function registerDevice(userId, deviceId) {
   if (!deviceId) return;
-  await pool.query('UPDATE users SET device_id = $1 WHERE id = $2', [deviceId, userId]);
+  await pool.query('UPDATE instagram_accounts SET device_id = $1 WHERE id = $2', [deviceId, userId]);
   await pool.query(
     `INSERT INTO device_accounts (device_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
     [deviceId, userId]
@@ -67,12 +67,12 @@ async function registerDevice(userId, deviceId) {
 }
 
 async function stampTask(userId) {
-  await pool.query('UPDATE users SET last_task_at = NOW() WHERE id = $1', [userId]);
+  await pool.query('UPDATE instagram_accounts SET last_task_at = NOW() WHERE id = $1', [userId]);
 }
 
 async function penalizeReclaim(userId) {
   const r = await pool.query(
-    `UPDATE users SET reclaim_count = reclaim_count + 1,
+    `UPDATE instagram_accounts SET reclaim_count = reclaim_count + 1,
             trust_score = GREATEST(0, trust_score - $2)
      WHERE id = $1 RETURNING reclaim_count, trust_score`,
     [userId, cfg.TRUST_PENALTY]
@@ -80,7 +80,7 @@ async function penalizeReclaim(userId) {
   const { reclaim_count, trust_score } = r.rows[0];
   if (reclaim_count >= cfg.RECLAIMS_BEFORE_BAN || trust_score <= cfg.TRUST_FLOOR_BAN) {
     await pool.query(
-      `UPDATE users SET is_banned = TRUE, banned_at = NOW(),
+      `UPDATE instagram_accounts SET is_banned = TRUE, banned_at = NOW(),
               ban_reason = 'Repeatedly undid completed tasks'
        WHERE id = $1 AND is_banned = FALSE`,
       [userId]

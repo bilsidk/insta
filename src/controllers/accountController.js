@@ -23,6 +23,11 @@ async function disconnect(req, res, next) {
       "UPDATE instagram_accounts SET is_active = FALSE, access_token = NULL, refresh_token = NULL WHERE user_id = $1",
       [req.userId]
     );
+    // Pause active campaigns so they stop appearing in the feed
+    await pool.query(
+      "UPDATE tasks SET status = 'paused' WHERE user_id = $1 AND status = 'active'",
+      [req.userId]
+    );
     res.json({ ok: true });
   } catch (err) { next(err); }
 }

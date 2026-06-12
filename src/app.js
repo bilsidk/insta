@@ -14,6 +14,7 @@ const app = express();
 app.set('trust proxy', 1);
 app.use(helmet());
 app.use(cors({ origin: process.env.ALLOWED_ORIGINS?.split(',') || '*' }));
+
 app.use(express.json({ limit: '10kb' }));
 
 const globalLimiter = rateLimit({
@@ -28,14 +29,6 @@ const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
   message: { error: 'Too many sign-in attempts' },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-const verifyLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 30,
-  message: { error: 'Too many verification attempts' },
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -63,7 +56,6 @@ app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().
 app.use('/auth',         authLimiter,    authRoutes);
 app.use('/users',                        userRoutes);
 app.use('/accounts',                     accountRoutes);
-app.use('/tasks/:id/verify', verifyLimiter);
 app.use('/tasks',        campaignLimiter, taskRoutes);
 app.use('/transactions',                 transactionRoutes);
 app.use('/admin',        adminLimiter,   adminRoutes);

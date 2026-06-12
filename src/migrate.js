@@ -2,11 +2,24 @@ require('dotenv').config();
 const pool = require('./db/pool');
 
 const SCHEMA = `
-CREATE TABLE IF NOT EXISTS users (
+-- Drop old schema (safe: DB was wiped)
+DROP TABLE IF EXISTS completions CASCADE;
+DROP TABLE IF EXISTS transactions CASCADE;
+DROP TABLE IF EXISTS device_accounts CASCADE;
+DROP TABLE IF EXISTS tasks CASCADE;
+DROP TABLE IF EXISTS instagram_accounts CASCADE;
+DROP TABLE IF EXISTS users CASCADE;
+DROP TABLE IF EXISTS app_settings CASCADE;
+
+CREATE TABLE IF NOT EXISTS instagram_accounts (
   id SERIAL PRIMARY KEY,
-  email VARCHAR(255) UNIQUE,
-  name VARCHAR(255),
-  avatar TEXT,
+  instagram_user_id VARCHAR(255) UNIQUE NOT NULL,
+  username VARCHAR(255) NOT NULL,
+  account_type VARCHAR(50),
+  profile_pic_url TEXT,
+  access_token TEXT,
+  refresh_token TEXT,
+  token_expiry TIMESTAMP,
   coins INTEGER DEFAULT 0,
   role VARCHAR(20) DEFAULT 'user',
   is_premium BOOLEAN DEFAULT FALSE,
@@ -20,23 +33,9 @@ CREATE TABLE IF NOT EXISTS users (
   created_at TIMESTAMP DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS instagram_accounts (
-  id SERIAL PRIMARY KEY,
-  user_id INTEGER UNIQUE REFERENCES users(id) ON DELETE CASCADE,
-  instagram_user_id VARCHAR(255) UNIQUE NOT NULL,
-  username VARCHAR(255) NOT NULL,
-  account_type VARCHAR(50),
-  profile_pic_url TEXT,
-  access_token TEXT,
-  refresh_token TEXT,
-  token_expiry TIMESTAMP,
-  is_active BOOLEAN DEFAULT TRUE,
-  created_at TIMESTAMP DEFAULT NOW()
-);
-
 CREATE TABLE IF NOT EXISTS tasks (
   id SERIAL PRIMARY KEY,
-  user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  user_id INTEGER REFERENCES instagram_accounts(id) ON DELETE CASCADE,
   account_id INTEGER REFERENCES instagram_accounts(id) ON DELETE CASCADE,
   task_type VARCHAR(50) NOT NULL,
   target_instagram_user_id VARCHAR(255),
@@ -53,13 +52,10 @@ CREATE TABLE IF NOT EXISTS tasks (
   created_at TIMESTAMP DEFAULT NOW()
 );
 
-ALTER TABLE tasks ADD COLUMN IF NOT EXISTS slot_cost INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE instagram_accounts ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
-
 CREATE TABLE IF NOT EXISTS completions (
   id SERIAL PRIMARY KEY,
   task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
-  user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  user_id INTEGER REFERENCES instagram_accounts(id) ON DELETE CASCADE,
   instagram_user_id VARCHAR(255),
   verify_method VARCHAR(20) DEFAULT 'api',
   verify_status VARCHAR(20) DEFAULT 'verified',
@@ -71,15 +67,9 @@ CREATE TABLE IF NOT EXISTS completions (
   UNIQUE(task_id, user_id)
 );
 
-ALTER TABLE completions ADD COLUMN IF NOT EXISTS verify_method VARCHAR(20) DEFAULT 'api';
-ALTER TABLE completions ADD COLUMN IF NOT EXISTS verify_status VARCHAR(20) DEFAULT 'verified';
-ALTER TABLE completions ADD COLUMN IF NOT EXISTS coins_awarded INTEGER DEFAULT 0;
-ALTER TABLE completions ADD COLUMN IF NOT EXISTS last_audit_at TIMESTAMP;
-ALTER TABLE completions ADD COLUMN IF NOT EXISTS audit_count INTEGER DEFAULT 0;
-
 CREATE TABLE IF NOT EXISTS transactions (
   id SERIAL PRIMARY KEY,
-  user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  user_id INTEGER REFERENCES instagram_accounts(id) ON DELETE CASCADE,
   amount INTEGER NOT NULL,
   type VARCHAR(50) NOT NULL,
   description TEXT,
@@ -89,7 +79,7 @@ CREATE TABLE IF NOT EXISTS transactions (
 CREATE TABLE IF NOT EXISTS device_accounts (
   id SERIAL PRIMARY KEY,
   device_id VARCHAR(255) NOT NULL,
-  user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  user_id INTEGER REFERENCES instagram_accounts(id) ON DELETE CASCADE,
   UNIQUE(device_id, user_id)
 );
 
@@ -111,7 +101,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_completions_task ON completions(task_id);
 CREATE INDEX IF NOT EXISTS idx_completions_user ON completions(user_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_user ON transactions(user_id);
-CREATE INDEX IF NOT EXISTS idx_instagram_accounts_user ON instagram_accounts(user_id);
+CREATE INDEX IF NOT EXISTS idx_instagram_accounts_ig_user ON instagram_accounts(instagram_user_id);
 CREATE INDEX IF NOT EXISTS idx_device_accounts_device ON device_accounts(device_id);
 `;
 

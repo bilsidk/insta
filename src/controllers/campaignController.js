@@ -1,10 +1,9 @@
 const pool = require('../db/pool');
-const cfg = require('../config');
 
 async function assertOwnsTask(taskId, userId) {
   const r = await pool.query(
-    `SELECT t.*, u.email, u.role
-     FROM tasks t JOIN users u ON u.id = $2
+    `SELECT t.*, ia.role
+     FROM tasks t JOIN instagram_accounts ia ON ia.id = $2
      WHERE t.id = $1 AND t.user_id = $2`,
     [taskId, userId]
   );
@@ -43,17 +42,16 @@ async function cancelCampaign(req, res, next) {
     if (['cancelled', 'completed'].includes(task.status))
       return res.status(400).json({ error: `Campaign is already ${task.status}` });
 
-    const isAppOwner = task.role === 'owner' || task.email?.toLowerCase() === cfg.OWNER_EMAIL;
-    let slotRefund = cfg.INSTA_SLOT_COSTS[task.task_type] || 0;
-    const refundCoins = isAppOwner ? 0 : task.remaining_slots * slotRefund;
+    const isOwner = task.role === 'owner';
+    const refundCoins = isOwner ? 0 : task.remaining_slots * (task.slot_cost || 0);
 
     await client.query('BEGIN');
     await client.query("UPDATE tasks SET status = 'cancelled' WHERE id = $1", [taskId]);
     if (refundCoins > 0) {
-      await client.query('UPDATE users SET coins = coins + $1 WHERE id = $2', [refundCoins, req.userId]);
+      await client.query('UPDATE instagram_accounts SET coins = coins + $1 WHERE id = $2', [refundCoins, req.userId]);
       await client.query(
-        `INSERT INTO transactions (user_id, amount, type, description) VALUES ($1, $2, 'earned', $3)`,
-        [req.userId, refundCoins, `Refund — campaign #${taskId} cancelled (${task.remaining_slots} slots)`]
+        `INSERT INTO transactions (user_id, amount, type, description) VALUES ($1, $2, 'bonus', $3)`,
+        [req.userId, refundCoins, `tx:campaign_refund|id:${taskId}|slots:${task.remaining_slots}`]
       );
     }
     await client.query('COMMIT');

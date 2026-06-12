@@ -17,18 +17,17 @@ async function getAvailableTasks(req, res, next) {
               t.instagram_media_id, t.instagram_media_thumbnail, t.instagram_media_permalink,
               t.instagram_media_caption, t.created_at,
               ia.username AS owner_username, ia.profile_pic_url AS owner_profile_pic,
-              u.role AS owner_role,
-              CASE u.role WHEN 'owner' THEN 1 WHEN 'premium' THEN 2 ELSE 3 END AS tier,
+              ia.role AS owner_role,
+              CASE ia.role WHEN 'owner' THEN 1 WHEN 'premium' THEN 2 ELSE 3 END AS tier,
               CASE WHEN COALESCE(t.total_slots, t.remaining_slots) > 0
                    THEN (COALESCE(t.total_slots, t.remaining_slots) - t.remaining_slots)::float
                         / COALESCE(t.total_slots, t.remaining_slots)
                    ELSE 0 END AS progress_ratio
        FROM tasks t
        JOIN instagram_accounts ia ON ia.id = t.account_id
-       JOIN users u ON u.id = t.user_id
        LEFT JOIN completions co ON co.task_id = t.id AND co.user_id = $1
        WHERE t.status = 'active' AND t.remaining_slots > 0 AND t.user_id != $1
-         AND co.id IS NULL AND ia.is_active = TRUE ${typeFilter}
+         AND co.id IS NULL ${typeFilter}
        ORDER BY tier ASC, progress_ratio ASC, t.created_at DESC LIMIT 80`,
       params
     );
@@ -71,11 +70,15 @@ async function createTask(req, res, next) {
       return res.status(400).json({ error: 'Invalid task_type' });
 
     const acc = await client.query(
-      'SELECT * FROM instagram_accounts WHERE user_id = $1 AND is_active = TRUE LIMIT 1',
+      'SELECT * FROM instagram_accounts WHERE id = $1',
       [req.userId]
     );
     if (!acc.rows.length)
       return res.status(400).json({ error: 'Connect Instagram account first' });
+
+    const me = acc.rows[0];
+    if (me.is_banned)
+      return res.status(403).json({ error: me.ban_reason || 'Account suspended', code: 'BANNED' });
 
     const appSettings = await settings.getSettings();
     const margin = appSettings.house_margin ?? 3;
@@ -87,17 +90,9 @@ async function createTask(req, res, next) {
     const taskReward = rewardMap[task_type];
     const slotCost   = taskReward + margin;
 
-    const me = await client.query('SELECT role, email FROM users WHERE id = $1', [req.userId]);
-    const user = me.rows[0];
-    const isOwner = user?.role === 'owner' || user?.email?.toLowerCase() === cfg.OWNER_EMAIL;
+    const isOwner = me.role === 'owner';
     const totalCost = isOwner ? 0 : slots * slotCost;
 
-    // Ban check
-    const banCheck = await pool.query('SELECT is_banned, ban_reason FROM users WHERE id = $1', [req.userId]);
-    if (banCheck.rows[0]?.is_banned)
-      return res.status(403).json({ error: banCheck.rows[0].ban_reason || 'Account suspended', code: 'BANNED' });
-
-    // Max slots guard (even owners get a ceiling to prevent feed flooding)
     const MAX_SLOTS = isOwner ? 10000 : 1000;
     if (slots > MAX_SLOTS)
       return res.status(400).json({ error: `Maximum ${MAX_SLOTS} slots per campaign` });
@@ -114,16 +109,16 @@ async function createTask(req, res, next) {
     await client.query('BEGIN');
 
     if (!isOwner) {
-      const uRes = await client.query('SELECT coins FROM users WHERE id = $1 FOR UPDATE', [req.userId]);
+      const uRes = await client.query('SELECT coins FROM instagram_accounts WHERE id = $1 FOR UPDATE', [req.userId]);
       if (uRes.rows[0].coins < totalCost) {
         await client.query('ROLLBACK');
         return res.status(402).json({ error: 'Insufficient coins', required: totalCost, available: uRes.rows[0].coins });
       }
-      await client.query('UPDATE users SET coins = coins - $1 WHERE id = $2', [totalCost, req.userId]);
+      await client.query('UPDATE instagram_accounts SET coins = coins - $1 WHERE id = $2', [totalCost, req.userId]);
     }
 
     const ownerTier = isOwner ? cfg.TIER.OWNER
-                    : user?.role === 'premium' ? cfg.TIER.PREMIUM
+                    : me.role === 'premium' ? cfg.TIER.PREMIUM
                     : cfg.TIER.USER;
 
     const taskRes = await client.query(
@@ -132,8 +127,8 @@ async function createTask(req, res, next) {
           instagram_media_permalink, instagram_media_caption,
           reward, slot_cost, remaining_slots, total_slots, owner_tier)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11,$12) RETURNING *`,
-      [req.userId, acc.rows[0].id, task_type,
-       task_type === 'follow' ? acc.rows[0].instagram_user_id : null,
+      [req.userId, req.userId, task_type,
+       task_type === 'follow' ? me.instagram_user_id : null,
        sanitize(instagram_media_id), sanitize(instagram_media_thumbnail),
        sanitize(instagram_media_permalink), sanitize(instagram_media_caption),
        taskReward, slotCost, slots, ownerTier]
@@ -169,7 +164,6 @@ async function verifyTask(req, res, next) {
     const taskId = parseInt(req.params.id, 10);
     const { started_at, device_id } = req.body;
 
-    // Anti-cheat checks
     try {
       await antiCheat.assertNotBanned(req.userId);
       await antiCheat.assertVelocityOk(req.userId);
@@ -178,7 +172,6 @@ async function verifyTask(req, res, next) {
       return res.status(e.status || 403).json({ error: e.message, code: e.code });
     }
 
-    // Completion delay check — started_at required and must be a real timestamp
     const startedAt = Number(started_at);
     if (!started_at || !Number.isFinite(startedAt) || startedAt > Date.now() || startedAt < Date.now() - 86400000)
       return res.status(400).json({ error: 'Invalid started_at', code: 'INVALID_STARTED_AT' });
@@ -208,13 +201,12 @@ async function verifyTask(req, res, next) {
       return res.status(403).json({ error: 'Cannot complete your own campaign' });
 
     const doerAcc = await pool.query(
-      'SELECT instagram_user_id FROM instagram_accounts WHERE user_id = $1 AND is_active = TRUE',
+      'SELECT instagram_user_id FROM instagram_accounts WHERE id = $1',
       [req.userId]
     );
     if (!doerAcc.rows.length)
       return res.status(400).json({ error: 'Connect Instagram first' });
 
-    // Degraded mode / API verification
     const mode = await settings.getMode();
     const degraded = mode.mode === 'degraded';
     let verifyMethod = 'honor';
@@ -223,21 +215,16 @@ async function verifyTask(req, res, next) {
       verifyMethod = 'api';
       try {
         let verified = false;
-        if (task.task_type === 'follow') {
+        if (task.task_type === 'follow')
           verified = await instagram.verifyFollow(task.user_id, doerAcc.rows[0].instagram_user_id);
-        } else if (task.task_type === 'like') {
+        else if (task.task_type === 'like')
           verified = await instagram.verifyLike(task.instagram_media_id, doerAcc.rows[0].instagram_user_id);
-        } else if (task.task_type === 'comment') {
+        else if (task.task_type === 'comment')
           verified = await instagram.verifyComment(task.instagram_media_id, doerAcc.rows[0].instagram_user_id);
-        }
         await settings.recordApiSuccess();
 
-        if (!verified) {
-          return res.status(400).json({
-            verified: false,
-            error: 'Action not detected. Complete the task in Instagram then try again.',
-          });
-        }
+        if (!verified)
+          return res.status(400).json({ verified: false, error: 'Action not detected. Complete the task in Instagram then try again.' });
       } catch (err) {
         await settings.recordApiFailure(String(err.response?.status || 'other'));
         const after = await settings.getMode();
@@ -249,7 +236,6 @@ async function verifyTask(req, res, next) {
       }
     }
 
-    // Transactional credit — lock task row first to prevent race condition
     await dbc.query('BEGIN');
 
     const lockRes = await dbc.query(
@@ -284,12 +270,10 @@ async function verifyTask(req, res, next) {
       [taskId]
     );
 
-    await dbc.query('UPDATE users SET coins = coins + $1 WHERE id = $2', [task.reward, req.userId]);
-
-    const txKey = `tx:task_completed|type:${task.task_type}|method:${verifyMethod}`;
+    await dbc.query('UPDATE instagram_accounts SET coins = coins + $1 WHERE id = $2', [task.reward, req.userId]);
     await dbc.query(
       `INSERT INTO transactions (user_id, amount, type, description) VALUES ($1, $2, 'earned', $3)`,
-      [req.userId, task.reward, txKey]
+      [req.userId, task.reward, `tx:task_completed|type:${task.task_type}|method:${verifyMethod}`]
     );
 
     await dbc.query('COMMIT');
@@ -297,7 +281,7 @@ async function verifyTask(req, res, next) {
     await antiCheat.stampTask(req.userId);
     if (device_id) await antiCheat.registerDevice(req.userId, device_id);
 
-    const bal = await pool.query('SELECT coins FROM users WHERE id = $1', [req.userId]);
+    const bal = await pool.query('SELECT coins FROM instagram_accounts WHERE id = $1', [req.userId]);
 
     res.json({
       verified: true,
