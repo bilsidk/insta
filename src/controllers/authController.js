@@ -86,24 +86,24 @@ async function instagramCallback(req, res, next) {
     const code = rawCode?.split('#')[0];
 
     if (error || !code)
-      return res.redirect(`com.instagrowth://auth?error=${encodeURIComponent(error || 'cancelled')}`);
+      return res.redirect(`https://insta-production-91be.up.railway.app/auth/done?error=${encodeURIComponent(error || 'cancelled')}`);
 
     console.log('[Callback] exchanging code:', code?.slice(0, 20), 'at', new Date().toISOString());
     const tokenResult = await instagram.exchangeCodeForToken(code);
-    if (!tokenResult) return res.redirect('com.instagrowth://auth?error=token_exchange_failed');
+    if (!tokenResult) return res.redirect('https://insta-production-91be.up.railway.app/auth/done?error=token_exchange_failed');
 
     const longLived = await instagram.getLongLivedToken(tokenResult.accessToken);
     const accessToken = longLived?.accessToken || tokenResult.accessToken;
     const expiresIn   = longLived?.expiresIn   || tokenResult.expiresIn;
 
     const userInfo = await instagram.getInstagramUserInfo(accessToken);
-    if (!userInfo) return res.redirect('com.instagrowth://auth?error=profile_fetch_failed');
+    if (!userInfo) return res.redirect('https://insta-production-91be.up.railway.app/auth/done?error=profile_fetch_failed');
 
     const userId = await _upsertAccount(userInfo, accessToken, expiresIn, null);
     const token = jwt.sign({ userId }, process.env.JWT_SECRET, { expiresIn: '30d' });
 
     if (state) _sessions.set(state, { token, at: Date.now() });
-    res.redirect(`com.instagrowth://auth?token=${encodeURIComponent(token)}`);
+    res.redirect(`https://insta-production-91be.up.railway.app/auth/done?token=${encodeURIComponent(token)}`);
   } catch (err) { next(err); }
 }
 
