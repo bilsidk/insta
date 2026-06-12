@@ -1,6 +1,6 @@
 const pool = require('../db/pool');
 const axios = require('axios');
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 const logger = require('../utils/logger');
 
 let _modeCache = { mode: 'live', reason: null, at: 0 };
@@ -27,23 +27,18 @@ const DEFAULTS = {
 
 // ─── Email ────────────────────────────────────────────────────────────────────
 
-function _getMailer() {
-  if (!process.env.SMTP_USER || !process.env.SMTP_PASS) return null;
-  return nodemailer.createTransport({
-    host:   process.env.SMTP_HOST || 'smtp.gmail.com',
-    port:   parseInt(process.env.SMTP_PORT || '465'),
-    secure: process.env.SMTP_PORT !== '587',
-    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
-  });
-}
-
 async function _sendAlert(subject, text) {
   const to = process.env.ALERT_EMAIL;
   if (!to) { logger.warn('[ALERT] ALERT_EMAIL not set — skipping email'); return; }
-  const mailer = _getMailer();
-  if (!mailer) { logger.warn('[ALERT] SMTP not configured — skipping email'); return; }
+  if (!process.env.RESEND_API_KEY) { logger.warn('[ALERT] RESEND_API_KEY not set — skipping email'); return; }
   try {
-    await mailer.sendMail({ from: process.env.SMTP_USER, to, subject, text });
+    const resend = new Resend(process.env.RESEND_API_KEY);
+    await resend.emails.send({
+      from: 'InstaGrowth <onboarding@resend.dev>',
+      to,
+      subject,
+      text,
+    });
     logger.info(`[ALERT] Email sent: ${subject}`);
   } catch (err) {
     logger.error('[ALERT] Email failed', { error: err.message });
