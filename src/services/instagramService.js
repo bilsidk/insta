@@ -56,7 +56,7 @@ async function verifyFollow(ownerUserId, followerInstagramId) {
 
   try {
     const ownerAcc = await pool.query(
-      'SELECT instagram_user_id FROM instagram_accounts WHERE user_id = $1',
+      'SELECT instagram_user_id FROM instagram_accounts WHERE id = $1',
       [ownerUserId]
     );
     const ownerIgId = ownerAcc.rows[0]?.instagram_user_id;
