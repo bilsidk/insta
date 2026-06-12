@@ -1,4 +1,7 @@
 const pool = require('../db/pool');
+const axios = require('axios');
+const nodemailer = require('nodemailer');
+const logger = require('../utils/logger');
 
 let _modeCache = { mode: 'live', reason: null, at: 0 };
 let _settingsCache = { data: null, at: 0 };
@@ -7,6 +10,9 @@ const TTL_MS = 30 * 1000;
 let _failWindow = [];
 const FAIL_WINDOW_MS = 5 * 60 * 1000;
 const FAIL_THRESHOLD = 25;
+
+const RECOVERY_INTERVAL_MS = 30 * 60 * 1000;
+let _recoveryTimer = null;
 
 const DEFAULTS = {
   daily_limit_user:         50,
@@ -18,6 +24,99 @@ const DEFAULTS = {
   completion_delay_seconds: 30,
   max_campaigns_per_user:   5,
 };
+
+// ─── Email ────────────────────────────────────────────────────────────────────
+
+function _getMailer() {
+  if (!process.env.SMTP_USER || !process.env.SMTP_PASS) return null;
+  return nodemailer.createTransport({
+    host:   process.env.SMTP_HOST || 'smtp.gmail.com',
+    port:   parseInt(process.env.SMTP_PORT || '465'),
+    secure: process.env.SMTP_PORT !== '587',
+    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+  });
+}
+
+async function _sendAlert(subject, text) {
+  const to = process.env.ALERT_EMAIL;
+  if (!to) { logger.warn('[ALERT] ALERT_EMAIL not set — skipping email'); return; }
+  const mailer = _getMailer();
+  if (!mailer) { logger.warn('[ALERT] SMTP not configured — skipping email'); return; }
+  try {
+    await mailer.sendMail({ from: process.env.SMTP_USER, to, subject, text });
+    logger.info(`[ALERT] Email sent: ${subject}`);
+  } catch (err) {
+    logger.error('[ALERT] Email failed', { error: err.message });
+  }
+}
+
+// ─── Instagram API probe ──────────────────────────────────────────────────────
+
+async function probeInstagramApi() {
+  try {
+    // Grab any valid token from DB to make a real API call
+    const res = await pool.query(
+      `SELECT access_token FROM instagram_accounts
+       WHERE is_active = TRUE AND token_expiry > NOW()
+       ORDER BY last_task_at DESC NULLS LAST LIMIT 1`
+    );
+    if (!res.rows.length) {
+      // No tokens available — just check if the endpoint is reachable
+      await axios.get('https://graph.facebook.com/', { timeout: 8000 });
+      return true;
+    }
+    const token = res.rows[0].access_token;
+    await axios.get('https://graph.facebook.com/v22.0/me', {
+      params: { fields: 'id', access_token: token },
+      timeout: 8000,
+    });
+    return true;
+  } catch (err) {
+    const status = err.response?.status;
+    // 400/401 means API is reachable but token issue — API itself is UP
+    if (status === 400 || status === 401) return true;
+    logger.warn('[PROBE] Instagram API probe failed', { error: err.message });
+    return false;
+  }
+}
+
+// ─── Recovery timer ───────────────────────────────────────────────────────────
+
+function _stopRecoveryTimer() {
+  if (_recoveryTimer) {
+    clearInterval(_recoveryTimer);
+    _recoveryTimer = null;
+  }
+}
+
+function _startRecoveryTimer() {
+  if (_recoveryTimer) return;
+  logger.info('[RECOVERY] Starting 30-min recovery check timer');
+  _recoveryTimer = setInterval(async () => {
+    try {
+      const current = await getMode();
+      if (current.mode !== 'degraded') { _stopRecoveryTimer(); return; }
+
+      logger.info('[RECOVERY] Probing Instagram API...');
+      const ok = await probeInstagramApi();
+      if (ok) {
+        await setMode('live', null);
+        _stopRecoveryTimer();
+        _failWindow = [];
+        await _sendAlert(
+          '✅ InstaGrowth — API recovered (auto)',
+          `Instagram API is responding again.\nMode switched back to LIVE automatically at ${new Date().toISOString()}.`
+        );
+      } else {
+        logger.info('[RECOVERY] Instagram API still down — staying degraded');
+      }
+    } catch (err) {
+      logger.error('[RECOVERY] Timer error', { error: err.message });
+    }
+  }, RECOVERY_INTERVAL_MS);
+}
+
+// ─── Core ─────────────────────────────────────────────────────────────────────
 
 async function getMode() {
   const now = Date.now();
@@ -59,7 +158,7 @@ async function setMode(mode, reason = null) {
     [mode, reason]
   );
   _modeCache = { mode, reason, at: Date.now() };
-  console.log(`[APP MODE] switched to "${mode}"${reason ? ' — ' + reason : ''}`);
+  logger.info(`[APP MODE] switched to "${mode}"${reason ? ' — ' + reason : ''}`);
 }
 
 async function recordApiFailure(kind) {
@@ -69,15 +168,43 @@ async function recordApiFailure(kind) {
   if (_failWindow.length >= FAIL_THRESHOLD) {
     const current = await getMode();
     if (current.mode !== 'degraded') {
-      await setMode('degraded', `Auto: ${_failWindow.length} API failures in 5m (last: ${kind})`);
+      // Confirm it's a real outage — probe from the server side
+      const apiDown = !(await probeInstagramApi());
+      const reason = apiDown
+        ? `Auto: ${_failWindow.length} API failures in 5m + server probe failed (last: ${kind})`
+        : `Auto: ${_failWindow.length} API failures in 5m — server probe OK (user-side issue?) (last: ${kind})`;
+
+      await setMode('degraded', reason);
+      _startRecoveryTimer();
+
+      await _sendAlert(
+        '🚨 InstaGrowth — API degraded, switching to honor mode',
+        `Switched to HONOR (degraded) mode.\n\nReason: ${reason}\nTime: ${new Date().toISOString()}\n\nThe app will auto-probe Instagram API every 30 minutes and recover automatically when it comes back.`
+      );
     }
   }
 }
 
 async function recordApiSuccess() {
   _failWindow = [];
-  // Don't auto-restore live — require admin to manually clear degraded mode
-  // (prevents abuse: flood 25 failures → honor mode → 1 success → back to live → repeat)
 }
 
-module.exports = { getMode, getSettings, updateSettings, setMode, recordApiFailure, recordApiSuccess, DEFAULTS };
+// Called once on app boot — resumes recovery timer if server restarted while degraded
+async function initOnBoot() {
+  try {
+    const current = await getMode();
+    if (current.mode === 'degraded') {
+      logger.info('[BOOT] App started in degraded mode — starting recovery timer');
+      _startRecoveryTimer();
+    }
+  } catch (err) {
+    logger.error('[BOOT] initOnBoot error', { error: err.message });
+  }
+}
+
+module.exports = {
+  getMode, getSettings, updateSettings, setMode,
+  recordApiFailure, recordApiSuccess,
+  probeInstagramApi, initOnBoot,
+  DEFAULTS,
+};
