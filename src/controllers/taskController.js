@@ -292,6 +292,16 @@ async function verifyTask(req, res, next) {
     let verifyMethod = 'honor';
 
     if (!degraded) {
+      // Follow/like can only be verified against a baseline recorded by POST /start.
+      // Without that row there is nothing to check, so reject instead of silently
+      // granting honor coins — otherwise a client could skip /start, forge started_at,
+      // and farm follow/like rewards with no actual engagement (never audited).
+      if (task.task_type !== 'comment' && !hasStart) {
+        return res.status(409).json({
+          error: 'Open the task in Instagram first, then verify.',
+          code: 'MUST_START',
+        });
+      }
       try {
         let verified = null;
         if (task.task_type === 'comment') {

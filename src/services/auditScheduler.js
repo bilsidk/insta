@@ -14,8 +14,14 @@ const BATCH_SIZE  = 50;
 // Only comments can be re-verified per-user (the IG API has no follower/liker
 // list edges) — follow/like completions are verified once via count deltas.
 async function checkValid(comp) {
-  if (comp.task_type === 'comment')
-    return instagram.verifyComment(comp.owner_user_id, comp.instagram_media_id, comp.instagram_user_id, comp.username);
+  if (comp.task_type === 'comment') {
+    // null = owner token missing / can't determine → keep (benefit of the doubt;
+    // it was already API-verified once). Only an explicit false reclaims.
+    const r = await instagram.verifyComment(
+      comp.owner_user_id, comp.instagram_media_id, comp.instagram_user_id, comp.username
+    );
+    return r !== false;
+  }
   return true;
 }
 

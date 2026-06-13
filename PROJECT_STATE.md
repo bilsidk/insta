@@ -40,6 +40,7 @@ Mobile → Instagram OAuth (Chrome Custom Tab via openAuth, www.instagram.com/oa
 DATABASE_URL, JWT_SECRET, OWNER_EMAIL, INSTAGRAM_APP_ID, INSTAGRAM_APP_SECRET,
 INSTAGRAM_REDIRECT_URI, RESEND_API_KEY, ALLOWED_ORIGINS, PUBLIC_BASE_URL,
 DB_SSL_NO_VERIFY=true, NODE_ENV=production
+OWNER_INSTAGRAM_ID=<your IG user id>   # optional: auto-promotes this account to owner on boot
 ```
 
 **Mobile .env (`D:\insta\mobile\.env`):**
@@ -154,7 +155,10 @@ CREATE TABLE app_settings (
 --   completion_delay_seconds(30), max_campaigns_per_user(5)
 ```
 
-**Migration:** `node src/migrate.js` (additive, safe on live DB). `--full` flag for full wipe+rebuild.
+**Migration:** additive migration runs automatically on every boot (server.js). `node src/migrate.js`
+runs it manually; `--full` wipes + rebuilds the whole schema. ⚠️ A brand-new/empty DB must run
+`node src/migrate.js --full` ONCE — the boot migration is additive-only (it ALTERs tables that must
+already exist; on an empty DB those errors are swallowed non-fatally and every query then fails).
 
 ---
 
@@ -210,8 +214,9 @@ POST   /admin/mode           body:{mode:'live'|'degraded', reason?} → {ok}
 POST   /admin/promote        body:{username, role:'premium'|'user'} → {ok}
 POST   /admin/grant-coins    body:{username, amount} → {ok}
 GET    /admin/users          query:{page?,username?} → {users, total, page, pages}
-POST   /admin/ban            body:{username, reason?, unban?} → {ok}
-       -- NOTE: username is not unique in DB — admin ops should migrate to user id
+POST   /admin/ban            body:{username|user_id, reason?, unban?} → {ok}
+       -- promote/grant/ban resolve via resolveTargetId(): prefer user_id; username
+          falls back but 409 AMBIGUOUS_USERNAME if it matches >1 account (not unique)
 ```
 
 **Health**
@@ -302,14 +307,41 @@ The old API verification was structurally broken (called nonexistent `graph.face
 - **Admin safety**: promote/grant/ban resolve to a single account id via `resolveTargetId()`;
   refuse on ambiguous (non-unique) username (409 AMBIGUOUS_USERNAME); accept explicit `user_id`.
 
+### Security Audit Fixes 2026-06-13
+Deep audit of full backend + verify flow. Fixed:
+1. **CRITICAL — honor-mode farming bypass.** A client could skip `POST /tasks/:id/start`,
+   forge `started_at`, and earn follow/like rewards with no engagement (no baseline → honor
+   grant in LIVE mode, never audited). Fix: verifyTask now rejects follow/like with
+   `409 MUST_START` in LIVE mode when no server-side `task_starts` row exists. Comments
+   unaffected (they verify exactly without a baseline). The app already calls `/start`.
+2. **HIGH — OAuth auto-return broken by CSP.** helmet() v8's default `script-src 'self'`
+   blocked the `/auth/done` inline redirect script, forcing a manual tap every login. Fix:
+   route-scoped relaxed CSP on that one response + `<meta http-equiv=refresh>` no-JS fallback.
+3. **MEDIUM — honest commenter blamed for owner's dead token.** `verifyComment` returned
+   `false` (→ hard reject) when the *owner's* token was missing. Now returns `null` → honor
+   fallback in verifyTask; audit `checkValid` treats `null` as keep (only explicit `false`
+   reclaims), so a missing owner token never wrongly reclaims a doer's coins.
+4. **Cleanup**: removed dead `INSTA_REWARDS`/`INSTA_SLOT_COSTS` from config (stale; live values
+   are in app_settings), removed unused `nodemailer` dep, deleted unused `InstagramAuthModal.jsx`.
+5. **Owner bootstrap**: `OWNER_INSTAGRAM_ID` env auto-promotes that account to owner on boot
+   (admin API was otherwise inert until a manual DB edit).
+
+**Accepted limitations (no clean fix — IG API has no follower/liker list edge):**
+- follow/like verification is count-delta based: it confirms the owner's count rose, not *who*
+  acted. On organically-growing accounts a user can ride someone else's follow. `verifiedSince`
+  stops multiple app-users sharing one delta but not outside/organic growth. Comment campaigns
+  are exactly verifiable and audited; follow/like are best-effort + velocity-capped.
+
 **PENDING:**
 1. Enable `instagram_business_manage_comments` permission in Meta app dashboard
 2. Rebuild mobile app (`npx react-native run-android`) and test full login + verify flow on device
+3. Set `OWNER_INSTAGRAM_ID` on Railway (or confirm your account already has role='owner')
 
 ### Known Issues
-- `InstagramAuthModal.jsx` (`D:\insta\mobile\src\components\`) still exists but is unused — leftover from WebView approach
 - Mobile `.env` has no `INSTAGRAM_APP_SECRET` (correct — secret stays server-side only)
 - `react-native-config` reads `.env` at build time; any `.env` change requires rebuild
+- `_sessions` (OAuth pickup) is in-memory — a server restart mid-login drops pending sessions
+  (user just retries); would need a shared store only if scaled to >1 instance
 
 ### File Locations — Key Files
 ```
@@ -353,7 +385,6 @@ D:\insta\mobile\
     components/
       LanguagePicker.jsx
       LoadingOverlay.jsx
-      InstagramAuthModal.jsx     (UNUSED — delete candidate)
     screens/
       LoginScreen.jsx, FeedScreen.jsx, PostDetailScreen.jsx,
       CreateCampaignScreen.jsx, MyCampaignsScreen.jsx,

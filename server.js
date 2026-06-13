@@ -17,6 +17,19 @@ const { runAdditiveMigration } = require('./src/migrate');
 
 const PORT = process.env.PORT || 4000;
 
+// Promote the configured account to owner on boot so the admin API isn't inert.
+// Idempotent and optional — does nothing unless OWNER_INSTAGRAM_ID is set.
+async function bootstrapOwner() {
+  const ownerIgId = process.env.OWNER_INSTAGRAM_ID;
+  if (!ownerIgId) return;
+  const r = await pool.query(
+    `UPDATE instagram_accounts SET role = 'owner'
+     WHERE instagram_user_id = $1 AND role <> 'owner' RETURNING id`,
+    [ownerIgId]
+  );
+  if (r.rows.length) logger.info(`Bootstrapped owner (instagram_user_id=${ownerIgId})`);
+}
+
 const server = app.listen(PORT, async () => {
   logger.info(`InstaGrowth API running on port ${PORT}`);
   // Apply idempotent additive migration on boot (creates task_starts + indexes
@@ -26,6 +39,11 @@ const server = app.listen(PORT, async () => {
     logger.info('Additive migration applied on boot');
   } catch (err) {
     logger.error('Boot migration failed (continuing)', { error: err.message });
+  }
+  try {
+    await bootstrapOwner();
+  } catch (err) {
+    logger.error('Owner bootstrap failed (continuing)', { error: err.message });
   }
   startAuditScheduler();
 });

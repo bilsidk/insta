@@ -11,14 +11,19 @@ router.get('/instagram/status', instagramStatus);
 router.get('/done', (req, res) => {
   const qs = new URLSearchParams(req.query).toString();
   const appUrl = `com.instagrowth://auth${qs ? '?' + qs : ''}`;
+  const attrUrl = appUrl.replace(/&/g, '&amp;'); // safe for HTML attributes (values already URL-encoded)
+  // The global helmet CSP blocks inline scripts. Relax it for THIS response only so
+  // the auto-redirect runs; meta-refresh is a no-JS fallback, anchor a manual one.
+  res.set('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'");
   res.set('Content-Type', 'text/html').send(`<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>InstaGrowth</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="0;url=${attrUrl}">
 <style>body{font-family:sans-serif;background:#0A0A0F;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;margin:0}
 a{background:#E1306C;color:#fff;text-decoration:none;padding:14px 28px;border-radius:12px;font-weight:600;margin-top:16px}</style>
 </head><body>
 <p>Returning to InstaGrowth…</p>
-<a href="${appUrl}">Open the app</a>
+<a href="${attrUrl}">Open the app</a>
 <script>window.location.replace(${JSON.stringify(appUrl)});</script>
 </body></html>`);
 });

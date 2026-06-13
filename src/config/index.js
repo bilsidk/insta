@@ -1,17 +1,8 @@
 module.exports = {
   OWNER_EMAIL: (process.env.OWNER_EMAIL || '').toLowerCase(),
 
-  INSTA_REWARDS: {
-    follow:  5,
-    like:    3,
-    comment: 6,
-  },
-
-  INSTA_SLOT_COSTS: {
-    follow:  8,
-    like:    5,
-    comment: 9,
-  },
+  // NOTE: rewards/slot costs are NOT defined here — they live in app_settings (DB),
+  // editable from the admin panel, and are read via settingsService.getSettings().
 
   TIER: { OWNER: 1, PREMIUM: 2, USER: 3 },
 

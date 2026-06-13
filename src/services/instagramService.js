@@ -104,10 +104,12 @@ async function verifyLike(ownerUserId, mediaId, baseline, verifiedSince = 0) {
   return current >= baseline + verifiedSince + 1;
 }
 
-// Comments are the only listable edge — exact per-user verification
+// Comments are the only listable edge — exact per-user verification.
+// Returns true = comment found, false = confirmed absent, null = can't determine
+// (owner token missing). null must NOT blame the doer — callers fall back to honor.
 async function verifyComment(ownerUserId, mediaId, userInstagramId, username) {
   const token = await getValidTokenForUser(ownerUserId);
-  if (!token) return false;
+  if (!token) return null;
 
   let after = null;
   for (let page = 0; page < 10; page++) {
